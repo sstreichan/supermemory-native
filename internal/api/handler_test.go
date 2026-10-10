@@ -220,3 +220,79 @@ func TestHandlerSync(t *testing.T) {
 		t.Errorf("unexpected success message: %q", resp.Message)
 	}
 }
+
+func TestDeleteMemory(t *testing.T) {
+	handler, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// 1. Add a document via the handler
+	addBody := addRequest{
+		Content:      "temporary memory to forget",
+		ContainerTag: "user_test_delete",
+	}
+	payload, _ := json.Marshal(addBody)
+	req := httptest.NewRequest("POST", "/v3/documents", bytes.NewBuffer(payload))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("add: expected 200, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+
+	var addResp struct {
+		Success bool   `json:"success"`
+		ID      string `json:"id"`
+	}
+	json.Unmarshal(rr.Body.Bytes(), &addResp)
+	if addResp.ID == "" {
+		t.Fatal("add: expected non-empty ID")
+	}
+
+	// 2. Delete via DELETE /v4/memories
+	delBody := deleteRequest{
+		ContainerTag: "user_test_delete",
+		ID:           addResp.ID,
+	}
+	delPayload, _ := json.Marshal(delBody)
+	req = httptest.NewRequest("DELETE", "/v4/memories", bytes.NewBuffer(delPayload))
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete: expected 200, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+
+	var delResp map[string]interface{}
+	json.Unmarshal(rr.Body.Bytes(), &delResp)
+	if delResp["success"] != true {
+		t.Error("delete: expected success=true")
+	}
+
+	// 3. Verify the memory is gone via search
+	searchBody := queryRequest{
+		Query:        "temporary memory",
+		ContainerTag: "user_test_delete",
+	}
+	searchPayload, _ := json.Marshal(searchBody)
+	req = httptest.NewRequest("POST", "/v4/search", bytes.NewBuffer(searchPayload))
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("search: expected 200, got %d", rr.Code)
+	}
+
+	var searchResp struct {
+		Results []map[string]interface{} `json:"results"`
+		Total   int                      `json:"total"`
+	}
+	json.Unmarshal(rr.Body.Bytes(), &searchResp)
+	if searchResp.Total != 0 {
+		t.Errorf("search: expected 0 results after delete, got %d", searchResp.Total)
+	}
+	for _, r := range searchResp.Results {
+		if r["id"] == addResp.ID {
+			t.Fatal("search: deleted memory still present in results")
+		}
+	}
+}

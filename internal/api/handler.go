@@ -25,6 +25,13 @@ type queryRequest struct {
 	ContainerTag string `json:"containerTag"`
 }
 
+type deleteRequest struct {
+	ContainerTag string `json:"containerTag"`
+	ID           string `json:"id"`
+	Content      string `json:"content"`
+	Reason       string `json:"reason"`
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -38,7 +45,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method != "POST" {
+	if r.Method != "POST" && r.Method != "DELETE" {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_, _ = w.Write([]byte(`{"error": "method not allowed"}`))
 		return
@@ -53,6 +60,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleSearchQuery(w, r)
 	case "/v3/sync":
 		h.handleSync(w, r)
+	case "/v4/memories":
+		h.handleDeleteMemory(w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error": "endpoint not found"}`))
@@ -179,5 +188,45 @@ func (h *Handler) handleSync(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Vault synchronization completed successfully",
+	})
+}
+
+func (h *Handler) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
+	var req deleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error": "failed to decode body"}`))
+		return
+	}
+	if req.ContainerTag == "" {
+		req.ContainerTag = "default"
+	}
+
+	// If no ID given, resolve by content within the container tag
+	if req.ID == "" && req.Content != "" {
+		results, err := h.Engine.QueryMemories(req.Content, req.ContainerTag, 0.99, 10)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error": "` + err.Error() + `"}`))
+			return
+		}
+		for _, res := range results {
+			if err := h.Engine.DeleteMemory(res.Memory.ID, req.ContainerTag); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error": "` + err.Error() + `"}`))
+				return
+			}
+		}
+	} else if req.ID != "" {
+		if err := h.Engine.DeleteMemory(req.ID, req.ContainerTag); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error": "` + err.Error() + `"}`))
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
 	})
 }

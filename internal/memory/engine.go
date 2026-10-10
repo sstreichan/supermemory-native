@@ -106,6 +106,17 @@ func (e *Engine) QueryMemories(query, containerTag string, threshold float32, li
 	return results, nil
 }
 
+// DeleteMemory removes a memory from both the SQLite index and the physical vault file.
+func (e *Engine) DeleteMemory(id, containerTag string) error {
+	if err := e.DB.DeleteMemory(id); err != nil {
+		return err
+	}
+	if e.Vault != nil {
+		_ = e.Vault.DeleteMemory(id)
+	}
+	return nil
+}
+
 // SyncVault performs a full bi-directional sync between the physical vault directory and the SQLite database index.
 func (e *Engine) SyncVault() error {
 	if e.Vault == nil {

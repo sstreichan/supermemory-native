@@ -86,14 +86,21 @@ func main() {
 	// 4. Initialize Core Engine
 	var provider embedding.EmbeddingProvider
 	providerType := os.Getenv("EMBEDDING_PROVIDER")
-	if providerType == "ollama" {
+	switch providerType {
+	case "ollama":
 		model := os.Getenv("EMBEDDING_MODEL")
 		if model == "" {
 			model = "nomic-embed-text"
 		}
 		log.Printf("Using Ollama Embedding Provider with model: %s", model)
 		provider = embedding.NewOllamaProvider(model)
-	} else {
+	case "openai":
+		model := os.Getenv("EMBEDDING_MODEL")
+		baseURL := os.Getenv("OPENAI_BASE_URL")
+		apiKey := os.Getenv("OPENAI_API_KEY")
+		log.Printf("Using OpenAI Embedding Provider with model: %s, baseURL: %s", model, baseURL)
+		provider = embedding.NewOpenAIProvider(model, baseURL, apiKey)
+	default:
 		log.Println("Using Gemini Cloud Embedding Provider")
 		provider = embedding.NewGeminiProvider(apiKey)
 	}
