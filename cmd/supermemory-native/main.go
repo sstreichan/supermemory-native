@@ -94,20 +94,10 @@ func main() {
 		}
 		log.Printf("Using Ollama Embedding Provider with model: %s", model)
 		provider = embedding.NewOllamaProvider(model)
-	case "bifrost", "openai":
+	case "openai":
 		model := os.Getenv("EMBEDDING_MODEL")
-		if model == "" {
-			model = "Sense/Qwen3-Embedding-0.6B-GGUF"
-		}
-		baseURL := os.Getenv("OPENAI_BASE_URL")
-		if baseURL == "" {
-			baseURL = "https://bifrost.xairo.ipv64.net/v1"
-		}
 		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			apiKey = os.Getenv("SUPERMEMORY_API_KEY")
-		}
-		log.Printf("Using OpenAI/Bifrost Embedding Provider with model: %s, baseURL: %s", model, baseURL)
+		log.Printf("Using OpenAI Embedding Provider with model: %s, baseURL: %s", model, baseURL)
 		provider = embedding.NewOpenAIProvider(model, baseURL, apiKey)
 	default:
 		log.Println("Using Gemini Cloud Embedding Provider")
