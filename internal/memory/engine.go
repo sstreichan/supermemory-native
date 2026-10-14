@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
-	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/supermemory-native/supermemory-native/internal/db"
@@ -16,6 +16,10 @@ type Engine struct {
 	DB       *db.SqliteDB
 	Provider embedding.EmbeddingProvider
 	Vault    *vault.Vault
+
+	// mu serializes state-mutating operations (add/delete/sync) so a running
+	// sync can never purge or resurrect rows racing against API writes.
+	mu sync.Mutex
 }
 
 func NewEngine(database *db.SqliteDB, provider embedding.EmbeddingProvider, v *vault.Vault) *Engine {
@@ -38,6 +42,8 @@ func (e *Engine) AddMemory(content, containerTag string) (string, error) {
 		return "", fmt.Errorf("content cannot be empty")
 	}
 
+	// The embedding call is a slow network round-trip that needs no shared
+	// state: run it before taking the engine lock.
 	embeddings, err := e.Provider.GenerateEmbeddings([]string{content})
 	if err != nil {
 		return "", err
@@ -47,14 +53,21 @@ func (e *Engine) AddMemory(content, containerTag string) (string, error) {
 	}
 
 	memID := GenerateUUID()
-	var filePath string
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var filePath string
+	var syncedAt time.Time
 	if e.Vault != nil {
 		path, err := e.Vault.WriteMemory(memID, content, containerTag)
 		if err != nil {
 			return "", fmt.Errorf("failed to write memory to vault: %w", err)
 		}
 		filePath = path
+		if fi, err := os.Stat(path); err == nil {
+			syncedAt = fi.ModTime()
+		}
 	}
 
 	mem := db.Memory{
@@ -64,9 +77,15 @@ func (e *Engine) AddMemory(content, containerTag string) (string, error) {
 		ContainerTag: containerTag,
 		CreatedAt:    time.Now(),
 		FilePath:     filePath,
+		SyncedAt:     syncedAt,
 	}
 
 	if err := e.DB.SaveMemory(mem); err != nil {
+		// Roll back the physical file: an orphan left on disk would be
+		// resurrected as a phantom memory by the next SyncVault run.
+		if e.Vault != nil {
+			_ = e.Vault.DeleteMemory(memID)
+		}
 		return "", err
 	}
 
@@ -108,13 +127,31 @@ func (e *Engine) QueryMemories(query, containerTag string, threshold float32, li
 
 // DeleteMemory removes a memory from both the SQLite index and the physical vault file.
 func (e *Engine) DeleteMemory(id, containerTag string) error {
-	if err := e.DB.DeleteMemory(id); err != nil {
-		return err
-	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Remove the physical file first and never swallow its error: if the DB
+	// delete then fails, the next sync purges the orphaned row — whereas the
+	// reverse order would let sync resurrect a memory that was just deleted.
 	if e.Vault != nil {
-		_ = e.Vault.DeleteMemory(id)
+		if err := e.Vault.DeleteMemory(id); err != nil {
+			return fmt.Errorf("failed to delete vault file: %w", err)
+		}
+	}
+	if err := e.DB.DeleteMemory(id); err != nil {
+		return fmt.Errorf("failed to delete memory index: %w", err)
 	}
 	return nil
+}
+
+// syncTask is one new or modified vault file awaiting re-indexing.
+type syncTask struct {
+	id           string
+	filePath     string
+	rawContent   string
+	containerTag string
+	body         string
+	modTime      time.Time
 }
 
 // SyncVault performs a full bi-directional sync between the physical vault directory and the SQLite database index.
@@ -123,86 +160,147 @@ func (e *Engine) SyncVault() error {
 		return fmt.Errorf("vault is not configured on engine")
 	}
 
-	// 1. List physical files on disk
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// 1. Snapshot the DB first, then list the disk. A memory added between the
+	//    two snapshots appears on disk *after* the DB read, so it can never be
+	//    purged as an orphan — at worst it is re-imported, which is an
+	//    idempotent upsert.
+	refs, err := e.DB.GetMemoryRefs()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve DB records during sync: %w", err)
+	}
+
 	diskIds, err := e.Vault.ListPhysicalFiles()
 	if err != nil {
 		return fmt.Errorf("failed to list files during sync: %w", err)
 	}
 
-	diskIDsMap := make(map[string]bool)
+	diskIDsMap := make(map[string]bool, len(diskIds))
 	for _, id := range diskIds {
 		diskIDsMap[id] = true
 	}
 
-	// 2. Retrieve all records from DB
-	dbMemories, err := e.DB.GetAllMemories()
-	if err != nil {
-		return fmt.Errorf("failed to retrieve DB records during sync: %w", err)
+	refsByID := make(map[string]db.MemoryRef, len(refs))
+	for _, ref := range refs {
+		refsByID[ref.ID] = ref
 	}
 
-	dbMemoriesMap := make(map[string]db.Memory)
-	for _, m := range dbMemories {
-		dbMemoriesMap[m.ID] = m
-	}
-
-	// 3. Purge DB records that no longer exist physically on disk
-	for _, m := range dbMemories {
-		if m.FilePath != "" && !diskIDsMap[m.ID] {
-			if err := e.DB.DeleteMemory(m.ID); err != nil {
-				return fmt.Errorf("failed to purge orphaned memory %s: %w", m.ID, err)
+	// 2. Purge DB records whose physical file is gone
+	for _, ref := range refs {
+		if ref.FilePath != "" && !diskIDsMap[ref.ID] {
+			if err := e.DB.DeleteMemory(ref.ID); err != nil {
+				return fmt.Errorf("failed to purge orphaned memory %s: %w", ref.ID, err)
 			}
 		}
 	}
 
-	// 4. Process new and modified files on disk
+	// 3. Collect new and modified files on disk. Modification is detected
+	//    against the file mtime recorded at the previous sync (SyncedAt), not
+	//    against CreatedAt, so edits within the creation clock tick are not
+	//    silently missed.
+	var tasks []syncTask
 	for _, id := range diskIds {
-		filePath := filepath.Join(e.Vault.Dir, id+".okf")
+		filePath, err := e.Vault.PathForID(id)
+		if err != nil {
+			continue // unsafe file name: never resolves to a vault path
+		}
 		info, err := os.Stat(filePath)
 		if err != nil {
 			continue // skip if file info error
 		}
 
-		dbMem, exists := dbMemoriesMap[id]
-		isModified := exists && info.ModTime().After(dbMem.CreatedAt)
+		ref, exists := refsByID[id]
+		if exists && !info.ModTime().After(ref.SyncedAt) {
+			continue
+		}
 
-		if !exists || isModified {
-			// Read and parse physical OKF content
-			rawContent, err := e.Vault.ReadMemory(id)
-			if err != nil {
-				continue
-			}
+		rawContent, err := e.Vault.ReadMemory(id)
+		if err != nil {
+			continue
+		}
 
-			doc, err := vault.ParseOKF(rawContent)
-			if err != nil {
-				continue
-			}
+		doc, err := vault.ParseOKF(rawContent)
+		if err != nil {
+			continue
+		}
 
-			// Extract container tag or default to "default"
-			containerTag := "default"
-			if val, ok := doc.Frontmatter["container_tag"].(string); ok && val != "" {
-				containerTag = val
-			}
+		containerTag := "default"
+		if val, ok := doc.Frontmatter["container_tag"].(string); ok && val != "" {
+			containerTag = val
+		}
 
-			// Generate embedding from the entire OKF document (including frontmatter metadata)
-			// to allow semantic search over YAML fields!
-			embeddings, err := e.Provider.GenerateEmbeddings([]string{rawContent})
-			if err != nil {
-				return fmt.Errorf("failed to generate embedding for synced file %s: %w", id, err)
-			}
+		tasks = append(tasks, syncTask{
+			id:           id,
+			filePath:     filePath,
+			rawContent:   rawContent,
+			containerTag: containerTag,
+			body:         doc.Body,
+			modTime:      info.ModTime(),
+		})
+	}
 
-			if len(embeddings) > 0 {
-				mem := db.Memory{
-					ID:           id,
-					Content:      doc.Body,
-					Vector:       embeddings[0],
-					ContainerTag: containerTag,
-					CreatedAt:    info.ModTime(),
-					FilePath:     filePath,
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	// 4. Generate embeddings in a bounded worker pool: embedding calls are
+	//    network round-trips and dominate sync time. Failures abort the sync
+	//    (the next run retries), matching the previous fail-fast behavior.
+	embeds := make([][]float32, len(tasks))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
+	workers := min(4, len(tasks))
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				emb, err := e.Provider.GenerateEmbeddings([]string{tasks[i].rawContent})
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("failed to generate embedding for synced file %s: %w", tasks[i].id, err)
+					}
+					errMu.Unlock()
+					continue
 				}
-				if err := e.DB.SaveMemory(mem); err != nil {
-					return fmt.Errorf("failed to save synced memory %s: %w", id, err)
+				if len(emb) > 0 {
+					embeds[i] = emb[0]
 				}
 			}
+		}()
+	}
+	for i := range tasks {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	if firstErr != nil {
+		return firstErr
+	}
+
+	// 5. Persist sequentially to keep SQLite transactions short and ordered.
+	for i, t := range tasks {
+		if len(embeds[i]) == 0 {
+			continue
+		}
+		mem := db.Memory{
+			ID:           t.id,
+			Content:      t.body,
+			Vector:       embeds[i],
+			ContainerTag: t.containerTag,
+			CreatedAt:    t.modTime,
+			FilePath:     t.filePath,
+			SyncedAt:     t.modTime,
+		}
+		if err := e.DB.SaveMemory(mem); err != nil {
+			return fmt.Errorf("failed to save synced memory %s: %w", t.id, err)
 		}
 	}
 
@@ -285,4 +383,3 @@ func (e *Engine) ListMemoriesPage(page, limit int, sortCol, order string) ([]db.
 
 	return memories, totalCount, nil
 }
-

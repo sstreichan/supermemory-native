@@ -94,13 +94,14 @@ func (o *OllamaProvider) embedSingle(text string) ([]float32, error) {
 	}
 
 	url := fmt.Sprintf("%s/api/embeddings", o.BaseURL)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := o.client.Do(req)
+	resp, err := doWithRetry(o.client, func() (*http.Request, error) {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,11 @@ import (
 )
 
 func setupTestHandler(t *testing.T) (*Handler, func()) {
+	// The host machine may export SUPERMEMORY_API_KEY (the same variable the
+	// handler enforces for non-loopback clients). httptest requests use a
+	// non-loopback RemoteAddr, so the key must be disabled for tests.
+	t.Setenv("SUPERMEMORY_API_KEY", "")
+
 	sdb, err := db.NewSqliteDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to init db: %v", err)

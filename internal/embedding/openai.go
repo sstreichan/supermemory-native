@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// OpenAIProvider implements EmbeddingProvider using OpenAI-compatible embeddings API
-// self-hosted OpenAI-compatible services).
+// OpenAIProvider implements EmbeddingProvider using the OpenAI embeddings API
+// (or any self-hosted OpenAI-compatible service).
 type OpenAIProvider struct {
 	Model   string
 	BaseURL string
@@ -62,14 +62,15 @@ func (o *OpenAIProvider) GenerateEmbeddings(texts []string) ([][]float32, error)
 	}
 
 	url := fmt.Sprintf("%s/embeddings", o.BaseURL)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+o.APIKey)
-
-	resp, err := o.client.Do(req)
+	resp, err := doWithRetry(o.client, func() (*http.Request, error) {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+o.APIKey)
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}

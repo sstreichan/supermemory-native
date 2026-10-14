@@ -893,7 +893,7 @@ footer {
             <li>
               <div class="step-title">Sync the vault</div>
               <div class="step-desc">Bi-directional sync between the OKF vault directory and the index.</div>
-              <div class="copy" id="ep-sync"><pre>curl -X POST http://localhost:6767/v3/sync -d '{}'</pre><button class="copy-btn" type="button" data-copy="ep-sync">copy</button></div>
+              <div class="copy" id="ep-sync"><pre>curl -X POST http://localhost:6767/v3/sync -H "Content-Type: application/json" -d '{}'</pre><button class="copy-btn" type="button" data-copy="ep-sync">copy</button></div>
             </li>
             <li>
               <div class="step-title">Container tags</div>
@@ -903,7 +903,7 @@ footer {
             <li>
               <div class="step-title">Daemon config</div>
               <div class="step-desc">Returns the port this daemon is bound to.</div>
-              <div class="copy" id="ep-config"><pre>curl -X POST http://localhost:6767/v3/config -d '{}'</pre><button class="copy-btn" type="button" data-copy="ep-config">copy</button></div>
+              <div class="copy" id="ep-config"><pre>curl -X POST http://localhost:6767/v3/config -H "Content-Type: application/json" -d '{}'</pre><button class="copy-btn" type="button" data-copy="ep-config">copy</button></div>
             </li>
           </ol>
         </details>
