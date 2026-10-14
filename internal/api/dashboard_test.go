@@ -253,7 +253,7 @@ func TestConfigEndpoint(t *testing.T) {
 	}
 
 	// The handler must report the port it was constructed with.
-	handler.Port = "7001"
+	handler.port = 7001
 	rr = httptest.NewRecorder()
 	handler.ServeHTTP(rr, httptest.NewRequest("POST", "/v3/config", bytes.NewBuffer([]byte(`{}`))))
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {

@@ -20,6 +20,16 @@ type Memory struct {
 	ContainerTag string    `json:"container_tag"`
 	CreatedAt    time.Time `json:"created_at"`
 	FilePath     string    `json:"file_path"`
+	SyncedAt     time.Time `json:"-"`
+	Norm         float64   `json:"-"`
+}
+
+// MemoryRef is the lightweight projection used by vault sync: it carries only
+// the fields needed to reconcile DB rows against physical files.
+type MemoryRef struct {
+	ID       string
+	FilePath string
+	SyncedAt time.Time
 }
 
 type SearchResult struct {
@@ -46,31 +56,49 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 		return nil, err
 	}
 
+	// Durability + concurrency: WAL lets readers run during writes, and a busy
+	// handler retries instead of surfacing SQLITE_BUSY to concurrent writers.
+	var mode string
+	if err := db.QueryRow("PRAGMA journal_mode=WAL;").Scan(&mode); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set WAL journal mode: %w", err)
+	}
+	var busyTimeout int
+	if err := db.QueryRow("PRAGMA busy_timeout=5000;").Scan(&busyTimeout); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
+	}
+
 	// Create tables if they don't exist
 	schema := `
 	CREATE TABLE IF NOT EXISTS memories (
 		id TEXT PRIMARY KEY,
 		content TEXT NOT NULL,
-		vector TEXT NOT NULL,
+		vector BLOB NOT NULL,
 		container_tag TEXT NOT NULL,
 		created_at DATETIME NOT NULL,
-		file_path TEXT NOT NULL DEFAULT ''
+		file_path TEXT NOT NULL DEFAULT '',
+		norm REAL NOT NULL DEFAULT 0,
+		synced_at DATETIME NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_memories_container ON memories(container_tag);
+	CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	// Check if file_path column exists in case the table was created under an older schema version
+	// Detect columns introduced by newer schema versions on an existing table.
 	rows, err := db.Query("PRAGMA table_info(memories)")
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	
+
 	hasFilePath := false
+	hasNorm := false
+	hasSyncedAt := false
 	for rows.Next() {
 		var cid int
 		var name, typeStr string
@@ -81,11 +109,20 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 			db.Close()
 			return nil, err
 		}
-		if name == "file_path" {
+		switch name {
+		case "file_path":
 			hasFilePath = true
+		case "norm":
+			hasNorm = true
+		case "synced_at":
+			hasSyncedAt = true
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	if !hasFilePath {
 		if _, err := db.Exec("ALTER TABLE memories ADD COLUMN file_path TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -93,8 +130,86 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 			return nil, err
 		}
 	}
+	if !hasNorm {
+		if _, err := db.Exec("ALTER TABLE memories ADD COLUMN norm REAL NOT NULL DEFAULT 0"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	addedSyncedAt := false
+	if !hasSyncedAt {
+		if _, err := db.Exec("ALTER TABLE memories ADD COLUMN synced_at DATETIME NOT NULL DEFAULT ''"); err != nil {
+			db.Close()
+			return nil, err
+		}
+		addedSyncedAt = true
+	}
+
+	// Rows that predate the synced_at column fall back to created_at, which
+	// preserves the legacy modification-detection behavior exactly.
+	if addedSyncedAt {
+		if _, err := db.Exec("UPDATE memories SET synced_at = created_at WHERE synced_at = '' OR synced_at IS NULL"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to backfill synced_at: %w", err)
+		}
+	}
+
+	// One-time conversion of legacy JSON text vectors to BLOB storage. Rows
+	// that fail to parse are left untouched; decodeVector rejects them safely.
+	if err := migrateTextVectors(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &SqliteDB{db: db}, nil
+}
+
+// migrateTextVectors converts every legacy JSON-encoded vector row to the
+// binary BLOB representation and stores the precomputed L2 norm alongside it.
+func migrateTextVectors(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query("SELECT id, vector FROM memories WHERE typeof(vector) = 'text'")
+	if err != nil {
+		return err
+	}
+
+	type conversion struct {
+		id     string
+		vector []float32
+	}
+	var conversions []conversion
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var vec []float32
+		if err := json.Unmarshal([]byte(raw), &vec); err != nil {
+			continue // corrupt row: leave for decodeVector to reject at query time
+		}
+		conversions = append(conversions, conversion{id: id, vector: vec})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, c := range conversions {
+		if _, err := tx.Exec(
+			"UPDATE memories SET vector = ?, norm = ? WHERE id = ?",
+			encodeVector(c.vector), vectorNorm(c.vector), c.id,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SqliteDB) Close() error {
@@ -102,22 +217,28 @@ func (s *SqliteDB) Close() error {
 }
 
 func (s *SqliteDB) SaveMemory(m Memory) error {
-	vectorJSON, err := json.Marshal(m.Vector)
-	if err != nil {
-		return err
+	vectorBlob := encodeVector(m.Vector)
+	norm := vectorNorm(m.Vector)
+	syncedAt := m.SyncedAt
+	if syncedAt.IsZero() {
+		// Rows written outside the sync path (legacy callers) treat their
+		// creation time as the last known file state.
+		syncedAt = m.CreatedAt
 	}
 
 	query := `
-	INSERT INTO memories (id, content, vector, container_tag, created_at, file_path)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO memories (id, content, vector, container_tag, created_at, file_path, norm, synced_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		content = excluded.content,
 		vector = excluded.vector,
 		container_tag = excluded.container_tag,
 		created_at = excluded.created_at,
-		file_path = excluded.file_path;
+		file_path = excluded.file_path,
+		norm = excluded.norm,
+		synced_at = excluded.synced_at;
 	`
-	_, err = s.db.Exec(query, m.ID, m.Content, string(vectorJSON), m.ContainerTag, m.CreatedAt, m.FilePath)
+	_, err := s.db.Exec(query, m.ID, m.Content, vectorBlob, m.ContainerTag, m.CreatedAt, m.FilePath, norm, syncedAt)
 	return err
 }
 
@@ -127,7 +248,7 @@ func (s *SqliteDB) DeleteMemory(id string) error {
 }
 
 func (s *SqliteDB) ListMemories(containerTag string, limit int) ([]Memory, error) {
-	rows, err := s.db.Query("SELECT id, content, vector, container_tag, created_at, file_path FROM memories WHERE container_tag = ? ORDER BY created_at DESC LIMIT ?", containerTag, limit)
+	rows, err := s.db.Query("SELECT id, content, container_tag, created_at, file_path FROM memories WHERE container_tag = ? ORDER BY created_at DESC LIMIT ?", containerTag, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -136,61 +257,89 @@ func (s *SqliteDB) ListMemories(containerTag string, limit int) ([]Memory, error
 	var memories []Memory
 	for rows.Next() {
 		var m Memory
-		var vectorStr string
-		if err := rows.Scan(&m.ID, &m.Content, &vectorStr, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(vectorStr), &m.Vector); err != nil {
+		if err := rows.Scan(&m.ID, &m.Content, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
 			return nil, err
 		}
 		memories = append(memories, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return memories, nil
 }
 
 func (s *SqliteDB) SearchMemories(containerTag string, queryVec []float32, threshold float32, limit int) ([]SearchResult, error) {
-	rows, err := s.db.Query("SELECT id, content, vector, container_tag, created_at, file_path FROM memories WHERE container_tag = ?", containerTag)
+	if limit <= 0 {
+		return []SearchResult{}, nil
+	}
+	rows, err := s.db.Query("SELECT id, content, vector, container_tag, created_at, file_path, norm FROM memories WHERE container_tag = ?", containerTag)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	// The query norm is constant for the whole scan: compute it once instead
+	// of once per row.
+	normQuery := vectorNorm(queryVec)
+
 	var results []SearchResult
 	for rows.Next() {
 		var m Memory
-		var vectorStr string
-		if err := rows.Scan(&m.ID, &m.Content, &vectorStr, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(vectorStr), &m.Vector); err != nil {
-			return nil, err
-		}
-
-		// Calculate similarity using our ultra-fast pure Go vector package
-		sim, err := vector.CosineSimilarity(queryVec, m.Vector)
-		if err != nil {
+		var vectorRaw []byte
+		var norm float64
+		if err := rows.Scan(&m.ID, &m.Content, &vectorRaw, &m.ContainerTag, &m.CreatedAt, &m.FilePath, &norm); err != nil {
 			return nil, err
 		}
 
-		if sim >= threshold {
-			results = append(results, SearchResult{
-				Memory:     m,
-				Similarity: sim,
-			})
+		vec, err := decodeVector(vectorRaw)
+		if err != nil || len(vec) != len(queryVec) {
+			// Corrupt or dimension-mismatched rows are skipped instead of
+			// aborting the entire search.
+			continue
 		}
+		if norm <= 0 {
+			norm = vectorNorm(vec)
+		}
+
+		var sim float32
+		if normQuery > 0 && norm > 0 {
+			dot, err := vector.DotProduct(queryVec, vec)
+			if err != nil {
+				continue
+			}
+			sim = float32(float64(dot) / (normQuery * norm))
+		}
+		if sim < threshold {
+			continue
+		}
+
+		insertTopK(&results, SearchResult{Memory: m, Similarity: sim}, limit)
 	}
-
-	// Sort results in descending order of similarity
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Similarity > results[j].Similarity
-	})
-
-	// Slice by limit
-	if len(results) > limit {
-		results = results[:limit]
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return results, nil
+}
+
+// insertTopK inserts sr into results keeping the slice sorted by descending
+// similarity and capped at limit entries, avoiding a full sort of every match.
+func insertTopK(results *[]SearchResult, sr SearchResult, limit int) {
+	res := *results
+	pos := sort.Search(len(res), func(i int) bool { return res[i].Similarity < sr.Similarity })
+
+	if len(res) < limit {
+		res = append(res, SearchResult{})
+		copy(res[pos+1:], res[pos:])
+		res[pos] = sr
+		*results = res
+		return
+	}
+	if pos >= limit {
+		return
+	}
+	copy(res[pos+1:], res[pos:len(res)-1])
+	res[pos] = sr
 }
 
 // GetUnmigratedMemories retrieves all memories that have an empty file_path.
@@ -209,6 +358,9 @@ func (s *SqliteDB) GetUnmigratedMemories() ([]Memory, error) {
 		}
 		memories = append(memories, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return memories, nil
 }
 
@@ -218,27 +370,27 @@ func (s *SqliteDB) UpdateFilePath(id, filePath string) error {
 	return err
 }
 
-// GetAllMemories retrieves all memories from the database.
-func (s *SqliteDB) GetAllMemories() ([]Memory, error) {
-	rows, err := s.db.Query("SELECT id, content, vector, container_tag, created_at, file_path FROM memories")
+// GetMemoryRefs retrieves the lightweight sync projection (id, file path,
+// last-synced timestamp) for every memory without loading content or vectors.
+func (s *SqliteDB) GetMemoryRefs() ([]MemoryRef, error) {
+	rows, err := s.db.Query("SELECT id, file_path, synced_at FROM memories")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var memories []Memory
+	var refs []MemoryRef
 	for rows.Next() {
-		var m Memory
-		var vectorStr string
-		if err := rows.Scan(&m.ID, &m.Content, &vectorStr, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
+		var ref MemoryRef
+		if err := rows.Scan(&ref.ID, &ref.FilePath, &ref.SyncedAt); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(vectorStr), &m.Vector); err != nil {
-			return nil, err
-		}
-		memories = append(memories, m)
+		refs = append(refs, ref)
 	}
-	return memories, nil
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return refs, nil
 }
 
 // CountMemories returns the total count of memories in the database.
@@ -287,8 +439,10 @@ func (s *SqliteDB) ListMemoriesPage(limit, offset int, sortCol, order string) ([
 		dir = "DESC"
 	}
 
+	// The dashboard list view never reads embeddings: skip the vector column
+	// entirely instead of decoding every row's vectors.
 	query := fmt.Sprintf(
-		"SELECT id, content, vector, container_tag, created_at, file_path FROM memories ORDER BY %s %s LIMIT ? OFFSET ?",
+		"SELECT id, content, container_tag, created_at, file_path FROM memories ORDER BY %s %s LIMIT ? OFFSET ?",
 		col, dir,
 	)
 
@@ -301,11 +455,7 @@ func (s *SqliteDB) ListMemoriesPage(limit, offset int, sortCol, order string) ([
 	memories := make([]Memory, 0)
 	for rows.Next() {
 		var m Memory
-		var vectorStr string
-		if err := rows.Scan(&m.ID, &m.Content, &vectorStr, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(vectorStr), &m.Vector); err != nil {
+		if err := rows.Scan(&m.ID, &m.Content, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
 			return nil, err
 		}
 		memories = append(memories, m)
@@ -356,4 +506,3 @@ func (s *SqliteDB) ListContainerTags() ([]ContainerTagStats, error) {
 
 	return stats, nil
 }
-

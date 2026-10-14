@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/supermemory-native/supermemory-native/internal/api"
 	"github.com/supermemory-native/supermemory-native/internal/db"
@@ -17,10 +18,15 @@ import (
 func main() {
 	log.Println("Starting Supermemory-Native Daemon...")
 
-	// 1. Resolve Port
+	// 1. Resolve Port and bind host. Loopback by default: exposing the daemon
+	// to the LAN (or the world) is an explicit opt-in via HOST.
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "6767"
+	}
+	host := os.Getenv("HOST")
+	if host == "" {
+		host = "127.0.0.1"
 	}
 
 	// 2. Resolve API Key
@@ -40,7 +46,7 @@ func main() {
 	}
 
 	dbDir := filepath.Join(homeDir, ".supermemory")
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
+	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		log.Fatalf("failed to create database directory: %v", err)
 	}
 
@@ -108,9 +114,26 @@ func main() {
 	handler := api.NewHandler(engine, port)
 
 	// 5. Start Server
-	addr := fmt.Sprintf("0.0.0.0:%s", port)
+	addr := fmt.Sprintf("%s:%s", host, port)
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		if os.Getenv("SUPERMEMORY_API_KEY") == "" {
+			log.Println("WARNING: listening on a non-loopback address without SUPERMEMORY_API_KEY — any host that can reach this port has full read/write access.")
+		} else {
+			log.Println("NOTE: non-loopback clients must authenticate with SUPERMEMORY_API_KEY; the bundled dashboard cannot send it from remote browsers.")
+		}
+	}
 	log.Printf("Supermemory-Native Server listening on http://%s", addr)
-	if err := http.ListenAndServe(addr, handler); err != nil {
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+		// Bounds against Slowloris-style and stalled connections.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("failed to start http server: %v", err)
 	}
 }

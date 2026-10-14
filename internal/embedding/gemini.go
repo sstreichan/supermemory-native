@@ -40,9 +40,6 @@ type geminiEmbedResponse struct {
 }
 
 func NewGeminiProvider(apiKey string) *GeminiProvider {
-	if apiKey == "" {
-		apiKey = ""
-	}
 	return &GeminiProvider{
 		APIKey:  apiKey,
 		Model:   "models/text-embedding-004",
@@ -81,14 +78,18 @@ func (g *GeminiProvider) GenerateEmbeddings(texts []string) ([][]float32, error)
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/v1beta/models/text-embedding-004:batchEmbedContents?key=%s", g.BaseURL, g.APIKey)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := g.client.Do(req)
+	// The key travels in a header, never in the URL: query strings end up in
+	// proxy logs, server logs and error messages.
+	url := fmt.Sprintf("%s/v1beta/models/text-embedding-004:batchEmbedContents", g.BaseURL)
+	resp, err := doWithRetry(g.client, func() (*http.Request, error) {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", g.APIKey)
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}

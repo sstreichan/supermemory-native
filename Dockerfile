@@ -23,8 +23,9 @@ RUN apk --no-cache add ca-certificates
 
 COPY --from=builder /app/supermemory-native /app/supermemory-native
 
-# Default port
+# Default port; bind all container interfaces so Docker port mapping works
 EXPOSE 6767
+ENV HOST=0.0.0.0
 
 # Run binary
 ENTRYPOINT ["/app/supermemory-native"]

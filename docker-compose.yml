@@ -8,6 +8,8 @@ services:
       - "6767:6767"
     environment:
       - PORT=6767
+      # Required inside containers: the daemon defaults to 127.0.0.1
+      - HOST=0.0.0.0
       - EMBEDDING_PROVIDER=ollama
       - EMBEDDING_MODEL=nomic-embed-text
       # Points to the host's Ollama instance over the Docker gateway
