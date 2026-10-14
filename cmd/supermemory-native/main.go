@@ -105,7 +105,7 @@ func main() {
 		provider = embedding.NewGeminiProvider(apiKey)
 	}
 	engine := memory.NewEngine(sdb, provider, v)
-	handler := api.NewHandler(engine)
+	handler := api.NewHandler(engine, port)
 
 	// 5. Start Server
 	addr := fmt.Sprintf("0.0.0.0:%s", port)

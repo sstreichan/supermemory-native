@@ -1,0 +1,10 @@
+{
+  "name": "supermemory-dashboard",
+  "private": true,
+  "description": "Self-contained local dashboard assets for the supermemory-native daemon.",
+  "scripts": {
+    "build": "bun run build:js && bun run build:html",
+    "build:js": "bun build ./src/local-console.js --minify --target browser --format iife --outfile ./local-console.js",
+    "build:html": "bun -e \"require('fs').copyFileSync('src/index.html', 'index.html')\""
+  }
+}

@@ -35,7 +35,7 @@ func setupTestHandler(t *testing.T) (*Handler, func()) {
 
 	prov := embedding.NewMockProvider()
 	eng := memory.NewEngine(sdb, prov, v)
-	handler := NewHandler(eng)
+	handler := NewHandler(eng, "6767")
 
 	return handler, func() {
 		sdb.Close()

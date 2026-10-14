@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go Environment
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
 
       - name: Compile Cross-Platform Static Binaries
         run: |

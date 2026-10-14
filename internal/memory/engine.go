@@ -208,3 +208,81 @@ func (e *Engine) SyncVault() error {
 
 	return nil
 }
+
+// CountMemories returns the total count of memories across the database.
+func (e *Engine) CountMemories() (int, error) {
+	if e.DB == nil {
+		return 0, fmt.Errorf("database is not configured on engine")
+	}
+	return e.DB.CountMemories()
+}
+
+// ListContainerTags returns aggregated container tag statistics grouped by container tag.
+func (e *Engine) ListContainerTags() ([]db.ContainerTagStats, error) {
+	if e.DB == nil {
+		return make([]db.ContainerTagStats, 0), fmt.Errorf("database is not configured on engine")
+	}
+	tags, err := e.DB.ListContainerTags()
+	if err != nil {
+		return nil, err
+	}
+	if tags == nil {
+		tags = make([]db.ContainerTagStats, 0)
+	}
+	return tags, nil
+}
+
+// ListMemoriesPage retrieves a paginated slice of memories with sorting, clamping,
+// total item count, and live vault physical file hydration.
+func (e *Engine) ListMemoriesPage(page, limit int, sortCol, order string) ([]db.Memory, int, error) {
+	if e.DB == nil {
+		return make([]db.Memory, 0), 0, fmt.Errorf("database is not configured on engine")
+	}
+
+	// 1. Clamp page and limit bounds
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	offset := (page - 1) * limit
+
+	// 2. Fetch total count across memories
+	totalCount, err := e.DB.CountMemories()
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count memories: %w", err)
+	}
+
+	if totalCount == 0 {
+		return make([]db.Memory, 0), 0, nil
+	}
+
+	// 3. Retrieve paginated records from database
+	memories, err := e.DB.ListMemoriesPage(limit, offset, sortCol, order)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list memories page: %w", err)
+	}
+	if memories == nil {
+		memories = make([]db.Memory, 0)
+	}
+
+	// 4. Hydrate content from physical vault files so live disk edits are reflected
+	if e.Vault != nil {
+		for i := range memories {
+			if memories[i].FilePath != "" {
+				fileContent, err := e.Vault.ReadMemory(memories[i].FilePath)
+				if err == nil {
+					memories[i].Content = fileContent
+				}
+			}
+		}
+	}
+
+	return memories, totalCount, nil
+}
+
