@@ -96,6 +96,7 @@ func main() {
 		provider = embedding.NewOllamaProvider(model)
 	case "openai":
 		model := os.Getenv("EMBEDDING_MODEL")
+		baseURL := os.Getenv("OPENAI_BASE_URL")
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		log.Printf("Using OpenAI Embedding Provider with model: %s, baseURL: %s", model, baseURL)
 		provider = embedding.NewOpenAIProvider(model, baseURL, apiKey)
@@ -104,7 +105,7 @@ func main() {
 		provider = embedding.NewGeminiProvider(apiKey)
 	}
 	engine := memory.NewEngine(sdb, provider, v)
-	handler := api.NewHandler(engine)
+	handler := api.NewHandler(engine, port)
 
 	// 5. Start Server
 	addr := fmt.Sprintf("0.0.0.0:%s", port)

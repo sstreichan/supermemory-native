@@ -1,0 +1,982 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>supermemory · local</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='5' fill='%230562ef'/%3E%3Cpath d='M8 12h8M12 8v8' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E" />
+<style>
+:root {
+  /* Flächen & Linien */
+  --line: #dfdfdf;
+  --line-soft: #ececec;
+  --chip: #c0c0c0;
+  --paper: #ffffff;
+  --warmwhite: #fffbf5;
+  --tint: rgba(5, 98, 239, 0.07);
+  /* Text & Marke */
+  --ink: #111113;
+  --body: #6f6f6f;
+  --warm: #79716b;
+  --sub: #9194a1;
+  --blue: #0562ef;
+  --success: #16a34a;
+  /* Codeblock */
+  --code-bg: #0b0c10;
+  --code-text: #e8e8ee;
+  --code-muted: #83869a;
+  /* Raster */
+  --inset: clamp(20px, 3vw, 48px);
+  --overlap: 96px;
+  /* Schatten */
+  --shadow-card: 0 0 0 1px rgba(9, 17, 32, .05), 0 1px 2px rgba(9, 17, 32, .05), 0 12px 32px -12px rgba(5, 34, 91, .16);
+  --shadow-card-deep: 0 0 0 1px rgba(9, 17, 32, .05), 0 2px 4px rgba(9, 17, 32, .06), 0 24px 56px -20px rgba(5, 34, 91, .28);
+  --shadow-window: 0 0 0 1px rgba(9, 17, 32, .07), 0 2px 6px rgba(9, 17, 32, .10), 0 40px 80px -28px rgba(4, 24, 96, .50);
+  /* Graph */
+  --graph-bg: #ffffff;
+  --graph-doc-fill: #e6efff;
+  --graph-doc-stroke: #0562ef;
+  --graph-mem-fill: #f1f1f3;
+  --graph-mem-stroke: #d2d4dc;
+  --graph-edge: #a3acc2;
+  --graph-text-primary: #111113;
+  --graph-text-secondary: #6f6f6f;
+  /* Typografie (System-Stacks offline) */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+html { scrollbar-gutter: stable; }
+body {
+  background: #fafafa;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+::selection { background: rgba(5, 98, 239, .18); }
+.wrap {
+  position: relative;
+  max-width: 1240px;
+  margin: 0 auto;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Hero ── */
+.hero {
+  position: relative;
+  padding: 30px var(--inset) calc(var(--overlap) + 56px);
+  background-color: #6d9ee8;
+  border-bottom: 1px solid var(--line);
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg,
+    rgba(4, 24, 96, .34) 0%,
+    rgba(4, 24, 96, .12) 42%,
+    rgba(4, 24, 96, .02) 75%);
+  pointer-events: none;
+}
+.hero > * { position: relative; }
+
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 54px; color: #fff; }
+.brand-logo { width: 27px; height: 27px; color: #fff; display: flex; align-items: center; justify-content: center; filter: drop-shadow(0 1px 6px rgba(4, 24, 96, .35)); }
+.brand-logo svg { width: 100%; height: 100%; }
+.brand { font-family: var(--font-display); font-weight: 600; letter-spacing: -.01em; font-size: 17px; text-shadow: 0 1px 10px rgba(4, 24, 96, .35); }
+.brand .dim { color: rgba(255, 255, 255, .72); font-weight: 500; }
+.status-pill {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid rgba(255, 255, 255, .45);
+  border-radius: 3px;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, .12);
+  backdrop-filter: blur(6px);
+}
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; animation: pulse 2.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .45; } }
+
+/* ── Tabs ── */
+.tabs { display: inline-flex; gap: 8px; margin: 0 0 44px; }
+.tab-btn {
+  appearance: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, .5);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .12);
+  backdrop-filter: blur(6px);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #fff;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.tab-btn:hover { background: rgba(255, 255, 255, .22); }
+.tab-btn.active { background: var(--paper); border-color: var(--paper); color: var(--blue); font-weight: 600; }
+.tab-btn.active::before, .tab-btn.active::after {
+  content: "";
+  position: absolute;
+  width: 5px; height: 5px;
+  transform: rotate(45deg);
+  background: var(--paper);
+  border: 1px solid rgba(5, 98, 239, .7);
+  border-radius: 1px;
+}
+.tab-btn.active::before { top: -3px; left: -3px; }
+.tab-btn.active::after { bottom: -3px; right: -3px; }
+
+.hero-copy[hidden] { display: none; }
+h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(42px, 6.2vw, 78px);
+  line-height: .98;
+  letter-spacing: -.035em;
+  margin: 0 0 18px;
+  color: #fff;
+  max-width: 16ch;
+  text-shadow: 0 2px 24px rgba(4, 24, 96, .35);
+}
+h1 .gradient { color: #dbe9ff; }
+.subtitle {
+  font-size: 16.5px;
+  color: rgba(255, 255, 255, .88);
+  margin: 0;
+  max-width: 56ch;
+  text-shadow: 0 1px 12px rgba(4, 24, 96, .35);
+}
+
+/* ── Marquee / Baseboard ── */
+.marquee {
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  background: var(--warmwhite);
+  padding: 8px 0;
+}
+.marquee-inner { display: inline-flex; white-space: nowrap; animation: marquee 46s linear infinite; }
+.marquee-inner span {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--warm);
+  padding-right: 56px;
+}
+.marquee-inner b { color: var(--blue); font-weight: 500; }
+@keyframes marquee { to { transform: translateX(-50%); } }
+.seam {
+  position: absolute;
+  width: 7px; height: 7px;
+  transform: rotate(45deg);
+  background: var(--paper);
+  border: 1px solid var(--chip);
+  border-radius: 1px;
+  z-index: 3;
+}
+.seam.tl { top: -4px; left: -4px; }
+.seam.tr { top: -4px; right: -4px; }
+
+/* ── Content zone ── */
+.content { position: relative; padding: 0 var(--inset); flex: 1; }
+.tab-panel[hidden] { display: none; }
+.tab-panel { animation: tab-in 240ms ease; }
+@keyframes tab-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* Resource cards breaking the hero edge */
+.resource-band {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin: calc(-1 * var(--overlap)) 0 14px;
+}
+@media (min-width: 760px) { .resource-band { grid-template-columns: 1.35fr 1fr 1fr; } }
+.resource-link {
+  display: flex;
+  min-height: 118px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px;
+  background: var(--paper);
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  box-shadow: var(--shadow-window);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+button.resource-link { appearance: none; border: none; font-family: inherit; text-align: left; cursor: pointer; width: 100%; }
+.resource-link:hover { transform: translateY(-2px); }
+.resource-link.primary { background: var(--blue); color: #fff; }
+.resource-label {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  font-family: var(--font-display);
+  font-size: 18px; font-weight: 600; letter-spacing: -.01em;
+}
+.resource-arrow { font-size: 20px; line-height: 1; color: var(--blue); }
+.resource-link.primary .resource-arrow { color: rgba(255, 255, 255, .85); }
+.resource-desc { margin: 0; color: var(--body); font-size: 13px; line-height: 1.45; }
+.resource-link.primary .resource-desc { color: rgba(255, 255, 255, .78); }
+
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 72px;
+  box-shadow: var(--shadow-card);
+}
+.summary-card { background: var(--paper); padding: 14px 16px; }
+.summary-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--sub);
+  font-weight: 500;
+  margin: 0 0 7px;
+}
+.summary-value { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); word-break: break-all; }
+
+.section-grid { display: grid; grid-template-columns: 1fr; gap: 56px; }
+@media (min-width: 920px) { .section-grid { grid-template-columns: 1fr 1fr; gap: 48px; } }
+.section-grid + .section-grid, .section-standalone { margin-top: 56px; }
+.section { display: flex; flex-direction: column; min-width: 0; }
+.section-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--blue);
+  font-weight: 500;
+  margin: 0 0 10px;
+}
+.section-title {
+  font-family: var(--font-display);
+  font-weight: 600; font-size: 24px; letter-spacing: -.015em;
+  margin: 0 0 8px; color: var(--ink);
+}
+.section-desc { color: var(--body); font-size: 14px; margin: 0 0 20px; max-width: 52ch; }
+.card-block {
+  background: var(--paper);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-card);
+}
+.card-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--sub);
+  margin: 0 0 10px;
+  font-weight: 500;
+}
+
+/* Forms & controls */
+.field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.field label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--sub);
+  font-weight: 500;
+}
+.input, .textarea {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.textarea { resize: vertical; min-height: 84px; line-height: 1.5; }
+.input:focus, .textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--tint); }
+.btn {
+  appearance: none;
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  padding: 9px 14px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.btn:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; color: var(--blue); }
+.btn.ghost:hover { background: var(--tint); }
+.btn:disabled { opacity: .5; cursor: progress; }
+.search-row { display: flex; gap: 8px; }
+.search-row .input { flex: 1; min-width: 0; }
+
+.banner {
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+  margin: 0 0 16px;
+  border: 1px solid #f3c9c9;
+  background: #fff1f1;
+  color: #a11a1a;
+}
+.banner[hidden] { display: none; }
+
+/* Document rows */
+.doc-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line-soft); }
+.doc-row:first-child { border-top: none; padding-top: 2px; }
+.doc-main { flex: 1; min-width: 0; }
+.doc-title { font-size: 13.5px; font-weight: 600; margin: 0 0 2px; }
+.doc-body {
+  font-size: 13px; line-height: 1.45; color: var(--ink); margin: 0 0 5px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.doc-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--sub); display: flex; flex-wrap: wrap; gap: 10px; }
+.score { font-family: var(--font-mono); font-size: 10.5px; color: var(--blue); }
+.link-btn {
+  appearance: none; background: none; border: none; padding: 0;
+  color: var(--warm); font-family: var(--font-mono); font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .1em; cursor: pointer;
+}
+.link-btn:hover { color: var(--blue); }
+.pagination {
+  display: flex; align-items: center; gap: 14px; margin-top: 14px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--sub);
+  text-transform: uppercase; letter-spacing: .1em;
+}
+.tag-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line-soft); }
+.tag-item:first-child { border-top: none; padding-top: 2px; }
+.mem-tag-chip {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: var(--tint);
+  border: 1px solid rgba(5, 98, 239, .25);
+  color: var(--blue);
+  border-radius: 3px;
+  padding: 3px 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+button.mem-tag-chip { cursor: pointer; }
+button.mem-tag-chip.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.empty-note { font-size: 13px; color: var(--sub); padding: 6px 0 2px; }
+
+/* Copy blocks */
+.copy {
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 8px;
+  padding: 14px 16px;
+  padding-right: 88px;
+  overflow-x: auto;
+}
+.copy pre { margin: 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; white-space: pre; }
+.copy-btn {
+  position: absolute;
+  top: 10px; right: 10px;
+  border: 1px solid #262a3a;
+  background: rgba(11, 12, 16, .85);
+  color: var(--code-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  padding: 5px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.copy-btn:hover { color: #fff; border-color: var(--code-muted); }
+.copy-btn.copied { color: #4ade80; border-color: rgba(74, 222, 128, .4); }
+
+/* Plugin accordions */
+.plugin {
+  border-radius: 10px;
+  background: var(--paper);
+  margin-bottom: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 140ms ease;
+}
+.plugin[open] { box-shadow: var(--shadow-card-deep); }
+.plugin summary { display: flex; align-items: center; gap: 14px; padding: 14px 16px; cursor: pointer; list-style: none; }
+.plugin summary::-webkit-details-marker { display: none; }
+.plugin-logo {
+  width: 38px; height: 38px;
+  border-radius: 9px;
+  background: #f4f4f5;
+  border: 1px solid var(--line-soft);
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--blue);
+}
+.plugin-logo svg { width: 22px; height: 22px; }
+.plugin-meta { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.plugin-name { font-family: var(--font-display); font-weight: 600; font-size: 15px; color: var(--ink); }
+.plugin-tagline { font-size: 12px; color: var(--sub); line-height: 1.4; margin-top: 2px; }
+.plugin-chevron { color: var(--sub); font-size: 20px; transform: rotate(0deg); transition: transform 160ms ease; }
+.plugin[open] .plugin-chevron { transform: rotate(90deg); color: var(--blue); }
+.steps { list-style: none; counter-reset: stepnum; margin: 0; padding: 0 16px 16px 50px; }
+.steps li { counter-increment: stepnum; padding: 12px 0; position: relative; border-top: 1px solid var(--line-soft); }
+.steps li:first-child { border-top: none; padding-top: 4px; }
+.steps li::before {
+  content: counter(stepnum, decimal-leading-zero);
+  position: absolute;
+  left: -30px; top: 15px;
+  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.steps li:first-child::before { top: 7px; }
+.step-title { font-weight: 600; font-size: 14px; color: var(--ink); margin-bottom: 2px; }
+.step-desc { font-size: 13px; color: var(--body); margin-bottom: 10px; }
+.step-desc:last-child { margin-bottom: 0; }
+
+.links {
+  display: flex; flex-wrap: wrap; gap: 18px;
+  margin-top: 48px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+}
+.links a { color: var(--warm); text-decoration: none; transition: color 120ms ease; }
+.links a:hover { color: var(--blue); }
+footer {
+  margin-top: 20px;
+  padding-bottom: 20px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--sub);
+}
+.baseboard {
+  position: relative;
+  height: 56px;
+  border-top: 1px solid var(--line);
+  background-color: var(--warmwhite);
+  background-image: radial-gradient(circle, #d9d2c7 1px, transparent 1.2px);
+  background-size: 14px 14px;
+  background-position: 7px 7px;
+}
+
+/* ── Memory tab ── */
+.mem-tab { display: flex; flex-direction: column; gap: 16px; }
+#memory-root { position: relative; z-index: 2; margin-top: calc(-1 * var(--overlap)); }
+.mem-graph-card {
+  position: relative;
+  background: var(--paper);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-window);
+}
+.mem-graph-card::before {
+  content: "";
+  display: block;
+  height: 38px;
+  background: #f5f5f4;
+  border-bottom: 1px solid #e7e5e4;
+}
+.mem-graph-card::after {
+  content: "";
+  position: absolute;
+  top: 14px; left: 16px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: #ff5f57;
+  box-shadow: 18px 0 0 #febc2e, 36px 0 0 #28c840;
+}
+.mem-graph-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mem-graph-title {
+  font-family: var(--font-mono);
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .12em;
+  color: var(--ink);
+}
+.mem-graph-sub { font-size: 12px; color: var(--sub); }
+.mem-graph-canvas {
+  position: relative;
+  height: min(56vh, 560px);
+  min-height: 380px;
+  background: var(--graph-bg);
+}
+.mem-graph-canvas svg { width: 100%; height: 100%; display: block; }
+.mem-graph-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.mem-graph-empty-title { font-family: var(--font-display); font-weight: 600; font-size: 18px; }
+.mem-graph-empty-sub { font-size: 13px; color: var(--sub); }
+
+.mem-statbar {
+  display: grid;
+  grid-template-columns: 1fr;
+  background: var(--paper);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+}
+@media (min-width: 760px) { .mem-statbar { grid-template-columns: 1fr 1fr 1fr auto; } }
+.mem-stat { position: relative; padding: 16px 20px 14px; border-top: 1px solid var(--line-soft); }
+.mem-stat:first-child { border-top: none; }
+@media (min-width: 760px) {
+  .mem-stat { border-top: none; border-left: 1px solid var(--line-soft); }
+  .mem-stat:first-child { border-left: none; }
+}
+.mem-stat-label {
+  font-family: var(--font-mono);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .14em;
+  color: var(--blue); font-weight: 500;
+}
+.mem-stat-value {
+  font-family: var(--font-display);
+  font-weight: 700; font-size: 44px; letter-spacing: -.03em;
+  line-height: 1.05; margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.mem-stat-hint { font-size: 12px; color: var(--sub); margin-top: 1px; }
+.mem-stat::after {
+  content: "";
+  position: absolute;
+  right: 20px; top: 20px;
+  width: 34px; height: 10px;
+  background-image: radial-gradient(circle, rgba(5, 98, 239, .5) 1.1px, transparent 1.3px);
+  background-size: 6px 6px;
+}
+.mem-refresh {
+  border: none;
+  border-top: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--warm);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  cursor: pointer;
+  padding: 16px 26px;
+  transition: all 140ms ease;
+}
+@media (min-width: 760px) { .mem-refresh { border-top: none; border-left: 1px solid var(--line-soft); } }
+.mem-refresh:hover { color: var(--blue); background: var(--tint); }
+
+.mem-panels { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 920px) { .mem-panels { grid-template-columns: 1fr 1fr 1fr; } }
+.mem-panel {
+  background: var(--paper);
+  border-radius: 10px;
+  padding: 14px 16px;
+  min-width: 0;
+  box-shadow: var(--shadow-card);
+}
+.mem-panel h3 {
+  font-family: var(--font-mono);
+  font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .12em;
+  color: var(--warm);
+  margin: 0 0 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.mem-list { list-style: none; margin: 0; padding: 0; }
+.mem-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line-soft); }
+.mem-row:first-child { border-top: none; padding-top: 2px; }
+.mem-dot { width: 7px; height: 7px; border-radius: 1px; transform: rotate(45deg); margin-top: 6px; flex-shrink: 0; background: var(--blue); }
+.mem-dot.static { background: #8b5cf6; }
+.mem-row-body { flex: 1; min-width: 0; }
+.mem-row-memory {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 13px; line-height: 1.45; color: var(--ink);
+}
+.mem-row-time { font-family: var(--font-mono); font-size: 10.5px; color: var(--sub); white-space: nowrap; margin-top: 3px; }
+.mem-empty { font-size: 13px; color: var(--sub); padding: 8px 0 2px; }
+.mem-loading[hidden] { display: none; }
+.mem-loading {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px;
+  height: 260px;
+  background: var(--paper);
+  border-radius: 10px;
+  box-shadow: var(--shadow-window);
+  color: var(--warm);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+}
+.mem-loading::before {
+  content: "";
+  width: 12px; height: 12px;
+  border: 2px solid var(--line);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: mem-spin 700ms linear infinite;
+}
+@keyframes mem-spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="hero">
+    <header>
+      <div class="brand-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="3" y="3" width="18" height="18" rx="5" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M8 12h8M12 8v8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="brand">supermemory <span class="dim">· local</span></div>
+      <div class="status-pill"><span class="status-dot"></span><span id="status-text">connecting</span></div>
+    </header>
+
+    <nav class="tabs" aria-label="Page sections">
+      <button class="tab-btn active" data-tab="overview" type="button" aria-label="Overview">Overview</button>
+      <button class="tab-btn" data-tab="memory" type="button" aria-label="Memory">Memory</button>
+    </nav>
+
+    <div class="hero-copy" id="hero-overview">
+      <h1>your memory layer is <span class="gradient">live</span>.</h1>
+      <p class="subtitle">
+        supermemory is running on this machine. embeddings, storage, and search
+        all happen locally — nothing leaves your laptop.
+      </p>
+    </div>
+    <div class="hero-copy" id="hero-memory" hidden>
+      <h1>this is what it <span class="gradient">remembers</span>.</h1>
+      <p class="subtitle">
+        recent documents, the memories extracted from them, and how they
+        connect — all from your local store.
+      </p>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="banner" id="error-banner" role="alert" hidden></div>
+
+    <div class="tab-panel" id="tab-overview">
+      <nav class="resource-band" aria-label="Local actions">
+        <button class="resource-link primary" type="button" data-action="sync">
+          <span class="resource-label">Sync vault <span class="resource-arrow" aria-hidden="true">↻</span></span>
+          <p class="resource-desc">Rescan the OKF vault for new or edited memories and re-index them.</p>
+        </button>
+        <button class="resource-link" type="button" data-action="focus-add">
+          <span class="resource-label">Capture a memory <span class="resource-arrow" aria-hidden="true">＋</span></span>
+          <p class="resource-desc">Write a fact straight into the local store — no cloud round-trip.</p>
+        </button>
+        <a class="resource-link" href="#memory">
+          <span class="resource-label">Memory graph <span class="resource-arrow" aria-hidden="true">↗</span></span>
+          <p class="resource-desc">See documents, extracted facts, and how they connect.</p>
+        </a>
+      </nav>
+
+      <div class="summary-row">
+        <div class="summary-card">
+          <p class="summary-label">endpoint</p>
+          <div class="summary-value" id="summary-endpoint">http://localhost:6767</div>
+        </div>
+        <div class="summary-card">
+          <p class="summary-label">documents</p>
+          <div class="summary-value" id="summary-documents">0</div>
+        </div>
+        <div class="summary-card">
+          <p class="summary-label">memories</p>
+          <div class="summary-value" id="summary-memories">0</div>
+        </div>
+        <div class="summary-card">
+          <p class="summary-label">container tags</p>
+          <div class="summary-value" id="summary-tags">0</div>
+        </div>
+      </div>
+
+      <div class="section-grid">
+        <section class="section" id="search">
+          <p class="section-eyebrow">01 — search</p>
+          <h2 class="section-title">Search your memory</h2>
+          <p class="section-desc">
+            Semantic search across everything stored locally. Scores are cosine
+            similarity — higher is closer to your query.
+          </p>
+          <div class="card-block">
+            <form class="search-row" id="search-form">
+              <label class="summary-label" for="search-input" hidden>Search query</label>
+              <input class="input" id="search-input" type="search" name="q" placeholder="What do you remember?" autocomplete="off" />
+              <button class="btn" type="submit" id="search-btn">Search</button>
+            </form>
+          </div>
+          <div class="card-block">
+            <p class="card-label">results</p>
+            <div id="search-results"><p class="empty-note">No search yet.</p></div>
+          </div>
+        </section>
+
+        <section class="section" id="capture">
+          <p class="section-eyebrow">02 — capture</p>
+          <h2 class="section-title">Capture a memory</h2>
+          <p class="section-desc">
+            Adds a document to the local store and indexes it immediately, so it
+            shows up in search right away.
+          </p>
+          <div class="card-block">
+            <form id="add-form">
+              <div class="field">
+                <label for="add-content">memory</label>
+                <textarea class="textarea" id="add-content" placeholder="e.g. the deploy key lives in 1password" required></textarea>
+              </div>
+              <div class="field">
+                <label for="add-tag">container tag</label>
+                <input class="input" id="add-tag" type="text" value="default" autocomplete="off" />
+              </div>
+              <button class="btn" type="submit" id="add-btn">Store memory</button>
+            </form>
+            <p class="empty-note" id="add-status" aria-live="polite"></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="section-grid">
+        <section class="section" id="documents">
+          <p class="section-eyebrow">03 — documents</p>
+          <h2 class="section-title">Stored documents</h2>
+          <p class="section-desc">
+            Everything in the local index, newest first. Forget removes a memory
+            from both the index and the vault file.
+          </p>
+          <div class="card-block">
+            <div id="doc-list"><p class="empty-note">Loading documents…</p></div>
+            <div class="pagination" id="doc-pagination"></div>
+          </div>
+        </section>
+
+        <section class="section" id="tags">
+          <p class="section-eyebrow">04 — tags</p>
+          <h2 class="section-title">Container tags</h2>
+          <p class="section-desc">
+            Memories are grouped by container tag. Filter the document list to a
+            single tag from here.
+          </p>
+          <div class="card-block">
+            <div id="tag-list"><p class="empty-note">Loading tags…</p></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="section section-standalone" id="endpoints">
+        <p class="section-eyebrow">05 — endpoints</p>
+        <h2 class="section-title">Local API</h2>
+        <p class="section-desc">
+          Every request this dashboard makes, plus a few for your own tooling.
+          No key is required for a local daemon.
+        </p>
+
+        <details class="plugin">
+          <summary>
+            <span class="plugin-logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 4h9l3 3v13H6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 12h6M9 16h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+            <span class="plugin-meta">
+              <span class="plugin-name">Documents</span>
+              <span class="plugin-tagline">Add, list, and forget memories in the local store.</span>
+            </span>
+            <span class="plugin-chevron" aria-hidden="true">›</span>
+          </summary>
+          <ol class="steps">
+            <li>
+              <div class="step-title">Add a document</div>
+              <div class="step-desc">Embeds the content and writes it to both the index and the vault.</div>
+              <div class="copy" id="ep-add"><pre>curl -X POST http://localhost:6767/v3/documents \
+  -H "Content-Type: application/json" \
+  -d '{"content":"supermemory is running locally!","containerTag":"default"}'</pre><button class="copy-btn" type="button" data-copy="ep-add">copy</button></div>
+            </li>
+            <li>
+              <div class="step-title">List documents</div>
+              <div class="step-desc">Paginated, sorted across every container tag.</div>
+              <div class="copy" id="ep-list"><pre>curl -X POST http://localhost:6767/v3/documents/documents \
+  -H "Content-Type: application/json" \
+  -d '{"page":1,"limit":100,"sort":"createdAt","order":"desc"}'</pre><button class="copy-btn" type="button" data-copy="ep-list">copy</button></div>
+            </li>
+            <li>
+              <div class="step-title">Forget a memory</div>
+              <div class="step-desc">Delete by id, or by content within a container tag.</div>
+              <div class="copy" id="ep-delete"><pre>curl -X DELETE http://localhost:6767/v4/memories \
+  -H "Content-Type: application/json" \
+  -d '{"id":"&lt;memory-id&gt;","containerTag":"default"}'</pre><button class="copy-btn" type="button" data-copy="ep-delete">copy</button></div>
+            </li>
+          </ol>
+        </details>
+
+        <details class="plugin">
+          <summary>
+            <span class="plugin-logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="1.6"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+            <span class="plugin-meta">
+              <span class="plugin-name">Search &amp; profile</span>
+              <span class="plugin-tagline">Semantic search and the derived profile of static and dynamic facts.</span>
+            </span>
+            <span class="plugin-chevron" aria-hidden="true">›</span>
+          </summary>
+          <ol class="steps">
+            <li>
+              <div class="step-title">Search</div>
+              <div class="step-desc">Results carry a cosine similarity score. Use query or q.</div>
+              <div class="copy" id="ep-search"><pre>curl -X POST http://localhost:6767/v4/search \
+  -H "Content-Type: application/json" \
+  -d '{"q":"what is running locally?","containerTag":"default"}'</pre><button class="copy-btn" type="button" data-copy="ep-search">copy</button></div>
+            </li>
+            <li>
+              <div class="step-title">Profile</div>
+              <div class="step-desc">Static and dynamic facts for a container tag, plus search results.</div>
+              <div class="copy" id="ep-profile"><pre>curl -X POST http://localhost:6767/v4/profile \
+  -H "Content-Type: application/json" \
+  -d '{"q":"favorite color","containerTag":"default"}'</pre><button class="copy-btn" type="button" data-copy="ep-profile">copy</button></div>
+            </li>
+          </ol>
+        </details>
+
+        <details class="plugin">
+          <summary>
+            <span class="plugin-logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+            <span class="plugin-meta">
+              <span class="plugin-name">Administration</span>
+              <span class="plugin-tagline">Vault sync, container tags, and daemon config.</span>
+            </span>
+            <span class="plugin-chevron" aria-hidden="true">›</span>
+          </summary>
+          <ol class="steps">
+            <li>
+              <div class="step-title">Sync the vault</div>
+              <div class="step-desc">Bi-directional sync between the OKF vault directory and the index.</div>
+              <div class="copy" id="ep-sync"><pre>curl -X POST http://localhost:6767/v3/sync -d '{}'</pre><button class="copy-btn" type="button" data-copy="ep-sync">copy</button></div>
+            </li>
+            <li>
+              <div class="step-title">Container tags</div>
+              <div class="step-desc">Aggregated counters per container tag.</div>
+              <div class="copy" id="ep-tags"><pre>curl http://localhost:6767/v3/container-tags/list</pre><button class="copy-btn" type="button" data-copy="ep-tags">copy</button></div>
+            </li>
+            <li>
+              <div class="step-title">Daemon config</div>
+              <div class="step-desc">Returns the port this daemon is bound to.</div>
+              <div class="copy" id="ep-config"><pre>curl -X POST http://localhost:6767/v3/config -d '{}'</pre><button class="copy-btn" type="button" data-copy="ep-config">copy</button></div>
+            </li>
+          </ol>
+        </details>
+      </section>
+
+    </div>
+
+    <div class="tab-panel" id="tab-memory" hidden>
+      <div class="mem-tab" id="memory-root">
+        <div class="mem-graph-card">
+          <div class="mem-graph-head">
+            <span class="mem-graph-title">Memory graph</span>
+            <span class="mem-graph-sub" id="graph-sub">documents connect to the memories extracted from them</span>
+          </div>
+          <div class="mem-graph-canvas" id="graph-canvas" role="img" aria-label="Graph of documents and their memories">
+            <div class="mem-loading">loading memory graph…</div>
+          </div>
+        </div>
+
+        <div class="mem-statbar">
+          <div class="mem-stat">
+            <div class="mem-stat-label">documents</div>
+            <div class="mem-stat-value" id="mem-stat-docs">0</div>
+            <div class="mem-stat-hint">stored on this machine</div>
+          </div>
+          <div class="mem-stat">
+            <div class="mem-stat-label">memories</div>
+            <div class="mem-stat-value" id="mem-stat-mems">0</div>
+            <div class="mem-stat-hint">extracted facts</div>
+          </div>
+          <div class="mem-stat">
+            <div class="mem-stat-label">container tags</div>
+            <div class="mem-stat-value" id="mem-stat-tags">0</div>
+            <div class="mem-stat-hint">isolated memory spaces</div>
+          </div>
+          <button class="mem-refresh" id="mem-refresh" type="button">refresh</button>
+        </div>
+
+        <div class="mem-panels">
+          <div class="mem-panel">
+            <h3>recent documents</h3>
+            <ul class="mem-list" id="panel-docs"></ul>
+          </div>
+          <div class="mem-panel">
+            <h3>recent memories</h3>
+            <ul class="mem-list" id="panel-mems"></ul>
+          </div>
+          <div class="mem-panel">
+            <h3>container tags</h3>
+            <ul class="mem-list" id="panel-tags"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="links">
+      <a href="#search">search</a>
+      <a href="#documents">documents</a>
+      <a href="#tags">container tags</a>
+      <a href="#memory">memory graph</a>
+      <a href="#endpoints">local api</a>
+    </div>
+
+    <footer>self-hosted · everything stays on this machine.</footer>
+  </div>
+
+  <div class="marquee" aria-hidden="true">
+    <span class="seam tl"></span><span class="seam tr"></span>
+    <div class="marquee-inner" id="marquee-inner"></div>
+  </div>
+  <div class="baseboard"></div>
+</div>
+
+<script src="/local-console.js" defer></script>
+</body>
+</html>

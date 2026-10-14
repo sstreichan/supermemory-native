@@ -3,7 +3,9 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,6 +25,15 @@ type Memory struct {
 type SearchResult struct {
 	Memory     Memory  `json:"memory"`
 	Similarity float32 `json:"similarity"`
+}
+
+// ContainerTagStats represents aggregated statistics for a container tag.
+type ContainerTagStats struct {
+	Name          string `json:"name"`
+	ContainerTag  string `json:"containerTag"`
+	DocumentCount int    `json:"documentCount"`
+	MemoryCount   int    `json:"memoryCount"`
+	Emoji         string `json:"emoji"`
 }
 
 type SqliteDB struct {
@@ -201,72 +212,7 @@ func (s *SqliteDB) GetUnmigratedMemories() ([]Memory, error) {
 	return memories, nil
 }
 
-// ContainerTagSummary is one row returned by ListContainerTags.
-type ContainerTagSummary struct {
-	Name          string
-	ContainerTag  string
-	DocumentCount int
-	MemoryCount   int
-}
-
-// MemorySummary is a lightweight view of one memory row for listing.
-type MemorySummary struct {
-	ID        string
-	Content   string
-	CreatedAt time.Time
-}
-
-// ListContainerTags returns every container tag present in the store, with counts.
-func (s *SqliteDB) ListContainerTags() ([]ContainerTagSummary, error) {
-	rows, err := s.db.Query(
-		`SELECT container_tag, COUNT(*), COUNT(*) FROM memories
-		 GROUP BY container_tag ORDER BY container_tag`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []ContainerTagSummary{}
-	for rows.Next() {
-		var s ContainerTagSummary
-		if err := rows.Scan(&s.Name, &s.DocumentCount, &s.MemoryCount); err != nil {
-			return nil, err
-		}
-		s.ContainerTag = s.Name
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
-// CountMemories returns the total number of memories in the store.
-func (s *SqliteDB) CountMemories() (int, error) {
-	var total int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&total); err != nil {
-		return 0, err
-	}
-	return total, nil
-}
-
-// ListDocumentSummaries returns one page of memories as document summaries, newest first.
-func (s *SqliteDB) ListDocumentSummaries(offset, limit int) ([]MemorySummary, error) {
-	rows, err := s.db.Query(
-		`SELECT id, content, created_at FROM memories
-		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]MemorySummary, 0)
-	for rows.Next() {
-		var m MemorySummary
-		if err := rows.Scan(&m.ID, &m.Content, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
+// UpdateFilePath updates the file path pointer for a specific memory record.
 func (s *SqliteDB) UpdateFilePath(id, filePath string) error {
 	_, err := s.db.Exec("UPDATE memories SET file_path = ? WHERE id = ?", filePath, id)
 	return err
@@ -294,3 +240,120 @@ func (s *SqliteDB) GetAllMemories() ([]Memory, error) {
 	}
 	return memories, nil
 }
+
+// CountMemories returns the total count of memories in the database.
+func (s *SqliteDB) CountMemories() (int, error) {
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM memories").Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// ListMemoriesPage retrieves a paginated slice of memories sorted by sortCol and order.
+// sortCol and order are validated against a strict whitelist to prevent SQL injection.
+// Defaults to created_at DESC if sortCol or order are invalid or empty.
+func (s *SqliteDB) ListMemoriesPage(limit, offset int, sortCol, order string) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var col string
+	switch strings.ToLower(strings.TrimSpace(sortCol)) {
+	case "created_at", "createdat":
+		col = "created_at"
+	case "id":
+		col = "id"
+	case "content":
+		col = "content"
+	case "container_tag", "containertag":
+		col = "container_tag"
+	case "file_path", "filepath":
+		col = "file_path"
+	default:
+		col = "created_at"
+	}
+
+	var dir string
+	switch strings.ToUpper(strings.TrimSpace(order)) {
+	case "ASC":
+		dir = "ASC"
+	case "DESC":
+		dir = "DESC"
+	default:
+		dir = "DESC"
+	}
+
+	query := fmt.Sprintf(
+		"SELECT id, content, vector, container_tag, created_at, file_path FROM memories ORDER BY %s %s LIMIT ? OFFSET ?",
+		col, dir,
+	)
+
+	rows, err := s.db.Query(query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	memories := make([]Memory, 0)
+	for rows.Next() {
+		var m Memory
+		var vectorStr string
+		if err := rows.Scan(&m.ID, &m.Content, &vectorStr, &m.ContainerTag, &m.CreatedAt, &m.FilePath); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(vectorStr), &m.Vector); err != nil {
+			return nil, err
+		}
+		memories = append(memories, m)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return memories, nil
+}
+
+// ListContainerTags returns aggregated container tag statistics grouped by container_tag.
+// Defaults empty tag to "default", emoji to "📁", and returns non-nil empty slice.
+func (s *SqliteDB) ListContainerTags() ([]ContainerTagStats, error) {
+	query := `SELECT CASE WHEN TRIM(container_tag) = '' THEN 'default' ELSE container_tag END AS tag, COUNT(*) 
+	          FROM memories 
+	          GROUP BY tag 
+	          ORDER BY tag ASC`
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stats := make([]ContainerTagStats, 0)
+	for rows.Next() {
+		var tag string
+		var count int
+		if err := rows.Scan(&tag, &count); err != nil {
+			return nil, err
+		}
+		if tag == "" {
+			tag = "default"
+		}
+		stats = append(stats, ContainerTagStats{
+			Name:          tag,
+			ContainerTag:  tag,
+			DocumentCount: count,
+			MemoryCount:   count,
+			Emoji:         "📁",
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
