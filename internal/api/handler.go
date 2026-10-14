@@ -45,15 +45,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method != "POST" && r.Method != "DELETE" {
+	// Serve the official local console dashboard on GET.
+	// The welcome page (index.html) live injects /local-console.js which calls
+	// the dashboard's API endpoints.
+	if r.Method == http.MethodGet {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(welcomePage)
+			return
+		case "/local-console.js":
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			_, _ = w.Write(localConsoleJS)
+			return
+		case "/v3/container-tags/list":
+			h.handleListContainerTags(w, r)
+			return
+		}
+	}
+
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		_, _ = w.Write([]byte(`{"error": "method not allowed"}`))
 		return
 	}
 
 	switch r.URL.Path {
+	case "/v3/config":
+		h.handleConfig(w, r)
 	case "/v3/documents":
 		h.handleAddDocument(w, r)
+	case "/v3/documents/documents":
+		h.handleListDocuments(w, r)
 	case "/v4/profile":
 		h.handleProfileQuery(w, r)
 	case "/v3/search", "/v4/search":
@@ -66,6 +89,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error": "endpoint not found"}`))
 	}
+}
+
+func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
 }
 
 func (h *Handler) handleAddDocument(w http.ResponseWriter, r *http.Request) {
@@ -228,5 +258,98 @@ func (h *Handler) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
+	})
+}
+
+type containerTagRow struct {
+	Name          string `json:"name"`
+	ContainerTag  string `json:"containerTag"`
+	DocumentCount int    `json:"documentCount"`
+	MemoryCount   int    `json:"memoryCount"`
+	Emoji         string `json:"emoji"`
+}
+
+func (h *Handler) handleListContainerTags(w http.ResponseWriter, _ *http.Request) {
+	stats, err := h.Engine.ListContainerTags()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	rows := make([]containerTagRow, 0, len(stats))
+	for _, s := range stats {
+		rows = append(rows, containerTagRow{
+			Name:          s.Name,
+			ContainerTag:  s.ContainerTag,
+			DocumentCount: s.DocumentCount,
+			MemoryCount:   s.MemoryCount,
+			Emoji:         "🧠",
+		})
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
+type listDocumentsRequest struct {
+	Page  int    `json:"page"`
+	Limit int    `json:"limit"`
+	Sort  string `json:"sort"`
+	Order string `json:"order"`
+}
+
+func (h *Handler) handleListDocuments(w http.ResponseWriter, r *http.Request) {
+	var req listDocumentsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to decode body"})
+		return
+	}
+	if req.Limit <= 0 {
+		req.Limit = 25
+	}
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+
+	page, err := h.Engine.ListDocuments(req.Page, req.Limit)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	docs := make([]map[string]interface{}, 0, len(page.Items))
+	for _, d := range page.Items {
+		entries := make([]map[string]interface{}, 0, len(d.MemoryEntries))
+		for _, e := range d.MemoryEntries {
+			entries = append(entries, map[string]interface{}{
+				"id":        e.ID,
+				"memory":    e.Memory,
+				"createdAt": e.CreatedAt,
+				"isStatic":  e.IsStatic,
+			})
+		}
+		docs = append(docs, map[string]interface{}{
+			"id":            d.ID,
+			"title":         d.Title,
+			"summary":       d.Summary,
+			"status":        d.Status,
+			"createdAt":     d.CreatedAt,
+			"updatedAt":     d.UpdatedAt,
+			"memories":      d.Memories,
+			"memoryEntries": entries,
+		})
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"documents": docs,
+		"pagination": map[string]int{
+			"totalItems":  page.TotalItems,
+			"totalPages":  page.TotalPages,
+			"currentPage": page.CurrentPage,
+		},
 	})
 }

@@ -201,7 +201,72 @@ func (s *SqliteDB) GetUnmigratedMemories() ([]Memory, error) {
 	return memories, nil
 }
 
-// UpdateFilePath updates the file path pointer for a specific memory record.
+// ContainerTagSummary is one row returned by ListContainerTags.
+type ContainerTagSummary struct {
+	Name          string
+	ContainerTag  string
+	DocumentCount int
+	MemoryCount   int
+}
+
+// MemorySummary is a lightweight view of one memory row for listing.
+type MemorySummary struct {
+	ID        string
+	Content   string
+	CreatedAt time.Time
+}
+
+// ListContainerTags returns every container tag present in the store, with counts.
+func (s *SqliteDB) ListContainerTags() ([]ContainerTagSummary, error) {
+	rows, err := s.db.Query(
+		`SELECT container_tag, COUNT(*), COUNT(*) FROM memories
+		 GROUP BY container_tag ORDER BY container_tag`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ContainerTagSummary{}
+	for rows.Next() {
+		var s ContainerTagSummary
+		if err := rows.Scan(&s.Name, &s.DocumentCount, &s.MemoryCount); err != nil {
+			return nil, err
+		}
+		s.ContainerTag = s.Name
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// CountMemories returns the total number of memories in the store.
+func (s *SqliteDB) CountMemories() (int, error) {
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM memories`).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// ListDocumentSummaries returns one page of memories as document summaries, newest first.
+func (s *SqliteDB) ListDocumentSummaries(offset, limit int) ([]MemorySummary, error) {
+	rows, err := s.db.Query(
+		`SELECT id, content, created_at FROM memories
+		 ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]MemorySummary, 0)
+	for rows.Next() {
+		var m MemorySummary
+		if err := rows.Scan(&m.ID, &m.Content, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
 func (s *SqliteDB) UpdateFilePath(id, filePath string) error {
 	_, err := s.db.Exec("UPDATE memories SET file_path = ? WHERE id = ?", filePath, id)
 	return err

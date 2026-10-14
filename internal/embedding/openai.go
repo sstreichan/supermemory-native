@@ -9,7 +9,7 @@ import (
 )
 
 // OpenAIProvider implements EmbeddingProvider using OpenAI-compatible embeddings API
-// (e.g. self-hosted OpenAI-compatible services).
+// (e.g. Bifrost gateway, or self-hosted OpenAI-compatible services).
 type OpenAIProvider struct {
 	Model   string
 	BaseURL string
@@ -44,6 +44,10 @@ func NewOpenAIProvider(model, baseURL, apiKey string) *OpenAIProvider {
 }
 
 func (o *OpenAIProvider) Dimension() int {
+	// Qwen3-Embedding-0.6B-GGUF produces 1024-dimensional vectors
+	if o.Model == "Sense/Qwen3-Embedding-0.6B-GGUF" {
+		return 1024
+	}
 	return 1536 // default for text-embedding-3-small
 }
 

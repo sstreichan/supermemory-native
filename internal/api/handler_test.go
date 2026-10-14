@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/supermemory-native/supermemory-native/internal/db"
@@ -17,7 +18,6 @@ import (
 func setupTestHandler(t *testing.T) (*Handler, func()) {
 	sdb, err := db.NewSqliteDB(":memory:")
 	if err != nil {
-		t.Fatalf("failed to init db: %v", err)
 	}
 
 	tempVaultDir, err := os.MkdirTemp("", "supermemory_api_vault_test_*")
@@ -293,6 +293,147 @@ func TestDeleteMemory(t *testing.T) {
 	for _, r := range searchResp.Results {
 		if r["id"] == addResp.ID {
 			t.Fatal("search: deleted memory still present in results")
+		}
+	}
+}
+
+func TestServesWelcomePage(t *testing.T) {
+	h, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `data-tab="memory"`) {
+		t.Error("welcome page missing the memory tab")
+	}
+}
+
+func TestServesLocalConsoleJS(t *testing.T) {
+	h, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/local-console.js", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /local-console.js = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("Content-Type = %q, want javascript", ct)
+	}
+	if rec.Body.Len() < 100_000 {
+		t.Errorf("bundle is %d bytes, want the full ~507KB dashboard", rec.Body.Len())
+	}
+}
+
+func TestListContainerTags(t *testing.T) {
+	h, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// Seed a memory so we have at least one tag.
+	if _, err := h.Engine.AddMemory("test memory for tags", "hermes"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v3/container-tags/list", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v3/container-tags/list = %d, want 200", rec.Code)
+	}
+
+	var rows []containerTagRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("response is not a JSON array: %v — body: %s", err, rec.Body.String())
+	}
+	if len(rows) == 0 {
+		t.Fatal("expected at least one container tag row")
+	}
+	for _, r := range rows {
+		if r.Name == "" || r.ContainerTag == "" {
+			t.Errorf("row missing name/containerTag: %+v", r)
+		}
+	}
+}
+
+func TestListDocumentsPaginated(t *testing.T) {
+	h, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// Seed three documents.
+	for _, content := range []string{"doc-one", "doc-two", "doc-three"} {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"content":"` + content + `","containerTag":"hermes"}`)
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v3/documents", body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("seed add = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	// Fetch page 1 with limit 2.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v3/documents/documents",
+		strings.NewReader(`{"page":1,"limit":2,"sort":"createdAt","order":"desc"}`))
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v3/documents/documents = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var out struct {
+		Documents []struct {
+			ID            string `json:"id"`
+			Title         string   `json:"title"`
+			Summary       string   `json:"summary"`
+			Status        string   `json:"status"`
+			CreatedAt     string   `json:"createdAt"`
+			UpdatedAt     string   `json:"updatedAt"`
+			Memories      []string `json:"memories"`
+			MemoryEntries []struct {
+				ID        string `json:"id"`
+				Memory    string `json:"memory"`
+				CreatedAt string `json:"createdAt"`
+				IsStatic  bool   `json:"isStatic"`
+			} `json:"memoryEntries"`
+		} `json:"documents"`
+		Pagination struct {
+			TotalItems  int `json:"totalItems"`
+			TotalPages  int `json:"totalPages"`
+			CurrentPage int `json:"currentPage"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v — body: %s", err, rec.Body.String())
+	}
+	if len(out.Documents) != 2 {
+		t.Errorf("got %d documents, want 2 (limit honored)", len(out.Documents))
+	}
+	if out.Pagination.TotalItems != 3 {
+		t.Errorf("totalItems = %d, want 3", out.Pagination.TotalItems)
+	}
+	if out.Pagination.TotalPages != 2 {
+		t.Errorf("totalPages = %d, want 2", out.Pagination.TotalPages)
+	}
+	if out.Pagination.CurrentPage != 1 {
+		t.Errorf("currentPage = %d, want 1", out.Pagination.CurrentPage)
+	}
+	for _, d := range out.Documents {
+		if d.ID == "" || d.CreatedAt == "" || d.Status == "" {
+			t.Errorf("document missing required field: %+v", d)
+		}
+		if len(d.MemoryEntries) == 0 {
+			t.Errorf("document %s missing memoryEntries", d.ID)
+		} else {
+			if d.MemoryEntries[0].ID == "" || d.MemoryEntries[0].Memory == "" {
+				t.Errorf("document %s has empty memoryEntry: %+v", d.ID, d.MemoryEntries[0])
+			}
 		}
 	}
 }

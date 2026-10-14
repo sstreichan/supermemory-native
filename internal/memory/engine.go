@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/supermemory-native/supermemory-native/internal/db"
@@ -207,4 +208,128 @@ func (e *Engine) SyncVault() error {
 	}
 
 	return nil
+}
+
+// ContainerTagStat is a single row in the dashboard's tag filter list.
+type ContainerTagStat struct {
+	Name          string
+	ContainerTag  string
+	DocumentCount int
+	MemoryCount   int
+}
+
+// ListContainerTags returns every container tag present in the store, with counts.
+// The official dashboard uses this to populate its tag filter chips.
+func (e *Engine) ListContainerTags() ([]ContainerTagStat, error) {
+	stats, err := e.DB.ListContainerTags()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]ContainerTagStat, 0, len(stats))
+	for _, s := range stats {
+		out = append(out, ContainerTagStat{
+			Name:          s.Name,
+			ContainerTag:  s.ContainerTag,
+			DocumentCount: s.DocumentCount,
+			MemoryCount:   s.MemoryCount,
+		})
+	}
+	return out, nil
+}
+
+// DocumentSummary is one row in the dashboard's document table.
+type DocumentSummary struct {
+	ID            string             `json:"id"`
+	Title         string             `json:"title"`
+	Summary       string             `json:"summary"`
+	Status        string             `json:"status"`
+	CreatedAt     string             `json:"createdAt"`
+	UpdatedAt     string             `json:"updatedAt"`
+	Memories      []string           `json:"memories"`
+	MemoryEntries []MemoryEntry      `json:"memoryEntries"`
+}
+
+// MemoryEntry is what the official dashboard's MemoryGraph expects inside each document.
+type MemoryEntry struct {
+	ID        string `json:"id"`
+	Memory    string `json:"memory"`
+	CreatedAt string `json:"createdAt"`
+	IsStatic  bool   `json:"isStatic"`
+}
+
+// Page is a generic pagination envelope for the dashboard's list endpoint.
+type Page[T any] struct {
+	Items       []T
+	TotalItems  int
+	TotalPages  int
+	CurrentPage int
+}
+
+// ListDocuments returns one page of memories rendered as documents, newest first.
+// supermemory-native stores memories directly (no separate document layer), so each
+// memory is presented as a single-document record. This is what the official dashboard's
+// document table consumes via POST /v3/documents/documents.
+func (e *Engine) ListDocuments(page, limit int) (Page[DocumentSummary], error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	if page <= 0 {
+		page = 1
+	}
+
+	total, err := e.DB.CountMemories()
+	if err != nil {
+		return Page[DocumentSummary]{}, err
+	}
+
+	offset := (page - 1) * limit
+	rows, err := e.DB.ListDocumentSummaries(offset, limit)
+	if err != nil {
+		return Page[DocumentSummary]{}, err
+	}
+
+	items := []DocumentSummary{}
+	for _, d := range rows {
+		ts := d.CreatedAt.UTC().Format(time.RFC3339)
+		items = append(items, DocumentSummary{
+			ID:        d.ID,
+			Title:     firstLine(d.Content, 80),
+			Summary:   truncate(d.Content, 240),
+			Status:    "done",
+			CreatedAt: ts,
+			UpdatedAt: ts,
+			Memories:  []string{d.Content},
+			MemoryEntries: []MemoryEntry{{
+				ID:        d.ID,
+				Memory:    d.Content,
+				CreatedAt: ts,
+				IsStatic:  false,
+			}},
+		})
+	}
+
+	totalPages := (total + limit - 1) / limit
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	return Page[DocumentSummary]{
+		Items: items, TotalItems: total,
+		TotalPages: totalPages, CurrentPage: page,
+	}, nil
+}
+
+func firstLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 && i < max {
+		return s[:i]
+	}
+	return truncate(s, max)
+}
+
+func truncate(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
