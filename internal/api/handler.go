@@ -285,19 +285,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The dashboard shell is public: a remote browser cannot know the API key
+	// before it has the page that asks for it, and these two embedded assets
+	// contain no memory data. Every API route below stays behind authorized().
+	if r.Method == http.MethodGet && r.URL.Path == "/" {
+		h.serveAsset(w, r, "index.html", "text/html; charset=utf-8")
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/local-console.js" {
+		h.serveAsset(w, r, "local-console.js", "application/javascript; charset=utf-8")
+		return
+	}
+
 	if !h.authorized(r) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="supermemory"`)
 		writeErr(w, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
-	// Method-aware routing: GET is only allowed on the static assets and the
-	// container-tag list. Every other route keeps its 405 for GET requests.
+	// Method-aware routing: GET is only allowed on the container-tag list.
+	// Every other route keeps its 405 for GET requests.
 	switch {
-	case r.Method == "GET" && r.URL.Path == "/":
-		h.serveAsset(w, r, "index.html", "text/html; charset=utf-8")
-	case r.Method == "GET" && r.URL.Path == "/local-console.js":
-		h.serveAsset(w, r, "local-console.js", "application/javascript; charset=utf-8")
 	case r.Method == "GET" && r.URL.Path == "/v3/container-tags/list":
 		h.handleContainerTagsList(w, r)
 	case r.Method == "POST" && r.URL.Path == "/v3/config":

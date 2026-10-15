@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/supermemory-native/supermemory-native/internal/db"
@@ -298,6 +299,62 @@ func TestDeleteMemory(t *testing.T) {
 	for _, r := range searchResp.Results {
 		if r["id"] == addResp.ID {
 			t.Fatal("search: deleted memory still present in results")
+		}
+	}
+}
+
+// TestAPIKeyEnforcedForNonLoopbackClients pins the contract behind a reverse
+// proxy: a non-loopback peer must present the API key (either header spelling
+// the dashboard and SDKs use), while a loopback peer stays exempt so the
+// console on the daemon's own machine keeps working without a key.
+func TestAPIKeyEnforcedForNonLoopbackClients(t *testing.T) {
+	handler, cleanup := setupTestHandler(t)
+	defer cleanup()
+	handler.apiKey = "sm_test_secret"
+
+	post := func(remoteAddr string, headers map[string]string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v3/config", bytes.NewBufferString("{}"))
+		req.RemoteAddr = remoteAddr
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	const remote = "203.0.113.7:51234"
+
+	rr := post(remote, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("remote without key: expected 401, got %d. Body: %s", rr.Code, rr.Body.String())
+	}
+	if challenge := rr.Header().Get("WWW-Authenticate"); !strings.Contains(challenge, "Bearer") {
+		t.Errorf("remote without key: expected a Bearer challenge, got %q", challenge)
+	}
+	if !strings.Contains(rr.Body.String(), "unauthorized") {
+		t.Errorf("remote without key: expected the unauthorized error body, got %q", rr.Body.String())
+	}
+
+	for _, headers := range []map[string]string{
+		{"x-supermemory-api-key": "sm_test_secret"},
+		{"Authorization": "Bearer sm_test_secret"},
+	} {
+		rr = post(remote, headers)
+		if rr.Code != http.StatusOK {
+			t.Errorf("remote with valid key %v: expected 200, got %d. Body: %s", headers, rr.Code, rr.Body.String())
+		}
+	}
+
+	rr = post(remote, map[string]string{"x-supermemory-api-key": "wrong"})
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("remote with wrong key: expected 401, got %d", rr.Code)
+	}
+
+	for _, loopback := range []string{"127.0.0.1:51234", "[::1]:51234"} {
+		rr = post(loopback, nil)
+		if rr.Code != http.StatusOK {
+			t.Errorf("loopback %s without key: expected 200, got %d. Body: %s", loopback, rr.Code, rr.Body.String())
 		}
 	}
 }

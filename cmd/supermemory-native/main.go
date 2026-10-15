@@ -119,7 +119,7 @@ func main() {
 		if os.Getenv("SUPERMEMORY_API_KEY") == "" {
 			log.Println("WARNING: listening on a non-loopback address without SUPERMEMORY_API_KEY — any host that can reach this port has full read/write access.")
 		} else {
-			log.Println("NOTE: non-loopback clients must authenticate with SUPERMEMORY_API_KEY; the bundled dashboard cannot send it from remote browsers.")
+			log.Println("NOTE: non-loopback clients must authenticate with SUPERMEMORY_API_KEY; the bundled dashboard prompts for the key and replays the request with it.")
 		}
 	}
 	log.Printf("Supermemory-Native Server listening on http://%s", addr)
