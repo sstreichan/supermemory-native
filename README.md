@@ -114,6 +114,16 @@ export PORT=6767
 export SUPERMEMORY_API_KEY="your_gemini_api_key_here"
 ```
 
+`SUPERMEMORY_API_KEY` doubles as the daemon's API key. Every client that is not
+loopback — LAN, reverse proxy (Caddy/nginx), the internet — must send it as
+`Authorization: Bearer <key>` or `x-supermemory-api-key: <key>`, otherwise the
+daemon answers `401 {"error":"unauthorized"}`. Only the dashboard shell
+(`/`, `/local-console.js`) is served without a key: those embedded assets
+contain no memories, and a remote browser needs the page before it can be
+asked for the key. The bundled dashboard asks for the key on the first
+rejected call, keeps it in this browser's local storage and replays the
+request, so the console keeps working behind a proxy.
+
 ### 3. Run the Daemon
 ```bash
 ./supermemory-native

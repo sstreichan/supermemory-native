@@ -16,9 +16,16 @@ var state = {
   limit: 20,
   memoryLoaded: false,
   busy: false,
+  apiKey: "",
 };
 
 var JSON_HEADERS = { "Content-Type": "application/json" };
+
+/* The daemon exempts loopback peers from its API key, so a browser on the
+ * same machine never sees a 401. Reached through a reverse proxy the peer is
+ * no longer loopback and every call is rejected until the key is presented —
+ * ask once, keep it in this browser and send it with every request. */
+var API_KEY_STORAGE = "sm-native-api-key";
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
@@ -74,22 +81,102 @@ function timeAgo(input) {
   return Math.floor(months / 12) + "y ago";
 }
 
+function currentApiKey() {
+  if (!state.apiKey) {
+    try {
+      state.apiKey = window.localStorage.getItem(API_KEY_STORAGE) || "";
+    } catch (err) {
+      state.apiKey = "";
+    }
+  }
+  return state.apiKey;
+}
+
+function rememberApiKey(key) {
+  state.apiKey = key;
+  try {
+    window.localStorage.setItem(API_KEY_STORAGE, key);
+  } catch (err) {
+    /* Storage unavailable (private mode): the key still lasts for this page. */
+  }
+}
+
+function withAuthHeaders(options) {
+  var opts = {};
+  for (var key in options || {}) {
+    if (Object.prototype.hasOwnProperty.call(options, key)) opts[key] = options[key];
+  }
+  var headers = {};
+  var source = opts.headers || {};
+  for (var name in source) {
+    if (Object.prototype.hasOwnProperty.call(source, name)) headers[name] = source[name];
+  }
+  var apiKey = currentApiKey();
+  if (apiKey) headers["x-supermemory-api-key"] = apiKey;
+  opts.headers = headers;
+  return opts;
+}
+
+function readResponse(res) {
+  return res.text().then(function (text) {
+    var data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (err) {
+        data = null;
+      }
+    }
+    if (!res.ok) {
+      var message = (data && (data.error || data.message)) || "HTTP " + res.status;
+      throw new Error(message);
+    }
+    return data;
+  });
+}
+
+/* One shared prompt at a time: parallel requests hit the same 401 together. */
+var pendingKeyPrompt = null;
+
+function askForKey() {
+  if (pendingKeyPrompt) return pendingKeyPrompt;
+  pendingKeyPrompt = new Promise(function (resolve) {
+    var entered = window.prompt(
+      "This daemon requires its API key (SUPERMEMORY_API_KEY) for non-local access.",
+      currentApiKey()
+    );
+    resolve(typeof entered === "string" ? entered.trim() : "");
+  }).then(function (entered) {
+    pendingKeyPrompt = null;
+    if (entered) rememberApiKey(entered);
+    return entered;
+  });
+  return pendingKeyPrompt;
+}
+
 function fetchJson(url, options) {
-  return fetch(url, options).then(function (res) {
-    return res.text().then(function (text) {
-      var data = null;
-      if (text) {
-        try {
-          data = JSON.parse(text);
-        } catch (err) {
-          data = null;
-        }
-      }
-      if (!res.ok) {
-        var message = (data && (data.error || data.message)) || "HTTP " + res.status;
-        throw new Error(message);
-      }
-      return data;
+  return send(url, options, true);
+}
+
+/* send() retries exactly once after a key was entered, so a wrong key fails
+ * fast with the daemon's own error instead of prompting in a loop. A request
+ * that 401s because a parallel call just collected the key replays with it
+ * without asking a second time. */
+function send(url, options, mayAskForKey) {
+  var sentKey = currentApiKey();
+  return fetch(url, withAuthHeaders(options)).then(function (res) {
+    if (res.status !== 401) {
+      return readResponse(res);
+    }
+    if (currentApiKey() !== sentKey) {
+      return send(url, options, false);
+    }
+    if (!mayAskForKey) {
+      return readResponse(res);
+    }
+    return askForKey().then(function (entered) {
+      if (entered) return send(url, options, false);
+      throw new Error("unauthorized — this daemon needs its API key (Sync vault asks for it)");
     });
   });
 }
@@ -203,7 +290,12 @@ function renderSummary() {
   var documents = byId("summary-documents");
   var memories = byId("summary-memories");
   var tags = byId("summary-tags");
-  if (endpoint) endpoint.textContent = "http://localhost:" + state.config.port;
+  if (endpoint) {
+    // Behind a reverse proxy the console is reached at another origin than
+    // localhost:PORT — show the URL the visitor actually used.
+    var origin = window.location && window.location.origin;
+    endpoint.textContent = origin && origin !== "null" ? origin : "http://localhost:" + state.config.port;
+  }
   if (documents) documents.textContent = String(state.pagination.totalItems || 0);
   if (memories) memories.textContent = String(totalMemories());
   if (tags) tags.textContent = String(state.tags.length);
@@ -509,8 +601,14 @@ function renderAll() {
 
 /* ── refresh ─────────────────────────────────────────────────────────── */
 
+/* Single-flight: init() may reach refresh() twice in a row (#memory deep link
+ * activates the tab, then the initial load runs) — share one in-flight chain
+ * instead of firing duplicate /v3/config calls. */
+var refreshInFlight = null;
+
 function refresh() {
-  return loadConfig()
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = loadConfig()
     .then(loadContainerTags)
     .then(function () {
       return loadDocuments(state.page);
@@ -522,7 +620,11 @@ function refresh() {
     })
     .catch(function (err) {
       showError(err && err.message ? err.message : String(err));
+    })
+    .then(function () {
+      refreshInFlight = null;
     });
+  return refreshInFlight;
 }
 
 function setBusy(busy) {

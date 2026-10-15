@@ -810,7 +810,10 @@ footer {
         <h2 class="section-title">Local API</h2>
         <p class="section-desc">
           Every request this dashboard makes, plus a few for your own tooling.
-          No key is required for a local daemon.
+          A daemon only reachable from this machine needs no key. Once it is
+          reachable from elsewhere (reverse proxy, LAN, internet) every call
+          carries SUPERMEMORY_API_KEY — this console asks for it once and keeps
+          it in this browser.
         </p>
 
         <details class="plugin">

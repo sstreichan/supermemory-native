@@ -82,6 +82,64 @@ func TestLocalConsoleBundleSize(t *testing.T) {
 	}
 }
 
+// A browser reaching the daemon through a reverse proxy is not a loopback
+// peer, so every console call is answered with 401 unless the bundle can
+// present the API key. This guards the remote-dashboard fix: if the key
+// handling is ever dropped from the bundle, the deployed dashboard breaks
+// silently while all Go handler tests stay green.
+func TestConsoleBundleCanAuthenticate(t *testing.T) {
+	handler, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/local-console.js", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	for _, marker := range []string{
+		"x-supermemory-api-key", // header the daemon accepts
+		"localStorage",          // where the key is kept between page loads
+		"window.prompt",         // how the key is collected after a 401
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("bundle is missing %q: remote dashboards would get 401 on every call", marker)
+		}
+	}
+}
+
+// The dashboard shell must load without a key — a remote browser has no key
+// until the page that asks for it arrived — while every API route stays
+// gated. This is the state the captured HAR expects: document + bundle 200,
+// API calls 401 until the console presents the key.
+func TestDashboardShellReachableWithoutAPIKey(t *testing.T) {
+	handler, cleanup := setupTestHandler(t)
+	defer cleanup()
+	handler.apiKey = "sm_test_secret"
+
+	// httptest defaults to a non-loopback RemoteAddr.
+	for _, path := range []string{"/", "/local-console.js"} {
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest("GET", path, nil))
+		if rr.Code != http.StatusOK {
+			t.Errorf("GET %s without key: expected 200 so the console can load, got %d", path, rr.Code)
+		}
+	}
+
+	for _, path := range []string{"/v3/container-tags/list"} {
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, httptest.NewRequest("GET", path, nil))
+		if rr.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s without key: expected 401, got %d", path, rr.Code)
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest("POST", "/v3/config", bytes.NewBufferString("{}")))
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("POST /v3/config without key: expected 401, got %d", rr.Code)
+	}
+}
+
 func TestContainerTagsList(t *testing.T) {
 	handler, cleanup := setupTestHandler(t)
 	defer cleanup()
