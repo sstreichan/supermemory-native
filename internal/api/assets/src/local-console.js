@@ -57,10 +57,15 @@ function clear(el) {
   while (el && el.firstChild) el.removeChild(el.firstChild);
 }
 
+/* Truncate on a word boundary when one is close, so labels break at a space
+ * ("container_tag: …") instead of mid-word ("container_t…"). */
 function truncate(text, length) {
   var value = String(text === undefined || text === null ? "" : text);
   if (value.length <= length) return value;
-  return value.slice(0, length - 1).trimEnd() + "…";
+  var head = value.slice(0, length - 1);
+  var cut = head.lastIndexOf(" ");
+  if (cut > 0 && cut >= head.length * 0.6) head = head.slice(0, cut);
+  return head.replace(/\s+$/, "") + "…";
 }
 
 function timeAgo(input) {
@@ -267,10 +272,100 @@ function totalMemories() {
   return Number(state.pagination.totalItems) || 0;
 }
 
+/* Documents and memory entries carry raw OKF: a `---` frontmatter block
+ * followed by the text. The raw first line is just the delimiter, so labels
+ * have to look past it. */
+
+function parseOkf(text) {
+  var lines = String(text === undefined || text === null ? "" : text).split("\n");
+  var frontmatter = [];
+  var body = lines;
+  if (lines.length > 0 && /^\s*---\s*$/.test(lines[0])) {
+    var end = -1;
+    for (var i = 1; i < lines.length; i++) {
+      if (/^\s*---\s*$/.test(lines[i])) {
+        end = i;
+        break;
+      }
+    }
+    if (end === -1) {
+      /* Opening delimiter without a closer: treat it all as frontmatter. */
+      frontmatter = lines;
+      body = [];
+    } else {
+      frontmatter = lines.slice(1, end);
+      body = lines.slice(end + 1);
+    }
+  }
+  return { frontmatter: frontmatter, body: body };
+}
+
+/* The delimiter itself (---, ===, …) is never a title. */
+function isMeaningfulTitle(value) {
+  var text = String(value === undefined || value === null ? "" : value).trim();
+  return text !== "" && !/^[-=_\s]+$/.test(text);
+}
+
+function frontmatterTitle(frontmatter) {
+  for (var i = 0; i < frontmatter.length; i++) {
+    var line = String(frontmatter[i] === undefined || frontmatter[i] === null ? "" : frontmatter[i]).trim();
+    if (line.indexOf("title:") !== 0) continue;
+    var value = line.slice("title:".length).trim();
+    if (value.length > 1) {
+      var first = value.charAt(0);
+      var last = value.charAt(value.length - 1);
+      if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+        value = value.slice(1, -1).trim();
+      }
+    }
+    if (isMeaningfulTitle(value)) return value;
+  }
+  return "";
+}
+
+/* First line that says something: skips blanks, `---` rules, and the
+ * `[role: …]` / `[user:end]` markers OKF wraps turns with. */
+function firstMeaningfulLine(lines) {
+  for (var i = 0; i < lines.length; i++) {
+    var raw = lines[i] === undefined || lines[i] === null ? "" : String(lines[i]);
+    var line = raw.replace(/\s+/g, " ").trim();
+    if (!line) continue;
+    if (/^\[[^\]]*\]$/.test(line)) continue;
+    if (/^[-=_\s]{3,}$/.test(line)) continue;
+    if (line.charAt(0) === "#") line = line.replace(/^#{1,6}\s*/, "").trim();
+    if (line) return line;
+  }
+  return "";
+}
+
+/* Real title from the backend when it has one (deployed daemons still send
+ * `title: "---"`), else the frontmatter title, else the first line of actual
+ * text — mirroring documentTitle() in the Go handler. */
 function docTitle(doc) {
-  var source = doc && (doc.title || doc.summary || "");
-  var firstLine = String(source).split("\n")[0];
-  return truncate(firstLine, 72) || "(untitled)";
+  var source = doc || {};
+  if (isMeaningfulTitle(source.title)) {
+    return truncate(String(source.title).replace(/\s+/g, " ").trim(), 80);
+  }
+  var okf = parseOkf(source.summary || source.title || "");
+  var title = frontmatterTitle(okf.frontmatter) || firstMeaningfulLine(okf.body);
+  return truncate(title, 80) || "(untitled)";
+}
+
+/* Label for a memory child node: the first line the speaker actually said,
+ * falling back to the frontmatter title when the body is all markers. */
+function memoryLabel(entry) {
+  var okf = parseOkf(entry && entry.memory ? entry.memory : "");
+  return firstMeaningfulLine(okf.body) || frontmatterTitle(okf.frontmatter);
+}
+
+/* One source of truth for "which documents does the visitor see", so the
+ * list and the graph can never disagree about the active tag filter. */
+function filteredDocuments() {
+  var docs = state.documents || [];
+  if (!state.activeFilter) return docs;
+  return docs.filter(function (doc) {
+    return ((doc && doc.containerTag) || "default") === state.activeFilter;
+  });
 }
 
 function docEntries(doc) {
@@ -342,12 +437,7 @@ function renderDocuments() {
   if (!list) return;
   clear(list);
 
-  var docs = state.documents;
-  if (state.activeFilter) {
-    docs = docs.filter(function (doc) {
-      return (doc.containerTag || "default") === state.activeFilter;
-    });
-  }
+  var docs = filteredDocuments();
 
   if (docs.length === 0) {
     var note = state.activeFilter
@@ -442,7 +532,7 @@ function renderGraph() {
   if (!canvas) return;
   clear(canvas);
 
-  var docs = state.documents || [];
+  var docs = filteredDocuments();
   if (docs.length === 0) {
     var empty = h("div", "mem-graph-empty");
     empty.appendChild(h("div", "mem-graph-empty-title", "nothing here yet"));
@@ -458,22 +548,37 @@ function renderGraph() {
   var cy = H / 2;
   var nodes = docs.slice(0, 8);
   var n = nodes.length;
-  var rx = 340;
-  var ry = 140;
+  /* Geometry: a 128×36 document rect on a 280×130 ellipse with its memory
+   * child pushed 155px further out (and 64px lower) keeps every pair of
+   * rects apart for 1..8 documents — 155·|cosθ| < 122 always implies
+   * 64·|sinθ| ≥ 33, so a child never sits inside its own parent either. */
+  var rx = 280;
+  var ry = 130;
+  var dx1 = 155;
+  var dy1 = 64;
+  var docHalfW = 64;
+  var docHalfH = 18;
+  var memHalfW = 58;
+  var memHalfH = 15;
 
   for (var i = 0; i < n; i++) {
     var angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
     var dx = cx + rx * Math.cos(angle);
     var dy = cy + ry * Math.sin(angle);
-    var mx = cx + (rx + 100) * Math.cos(angle);
-    var my = cy + (ry + 64) * Math.sin(angle);
+    var mx = cx + (rx + dx1) * Math.cos(angle);
+    var my = cy + (ry + dy1) * Math.sin(angle);
 
     svg.appendChild(
       svgEl("line", { x1: dx, y1: dy, x2: mx, y2: my, stroke: "#a3acc2", "stroke-width": 1 })
     );
 
     var doc = nodes[i] || {};
-    svg.appendChild(svgEl("rect", { x: dx - 70, y: dy - 18, width: 140, height: 36, rx: 8, fill: "#e6efff", stroke: "#0562ef" }));
+    svg.appendChild(
+      svgEl("rect", {
+        x: dx - docHalfW, y: dy - docHalfH, width: docHalfW * 2, height: docHalfH * 2,
+        rx: 8, fill: "#e6efff", stroke: "#0562ef",
+      })
+    );
     var docLabel = svgEl("text", {
       x: dx, y: dy, "text-anchor": "middle", "dominant-baseline": "middle",
       "font-family": "monospace", "font-size": 10, fill: "#111113",
@@ -482,12 +587,17 @@ function renderGraph() {
     svg.appendChild(docLabel);
 
     var memory = docEntries(doc)[0] || {};
-    svg.appendChild(svgEl("rect", { x: mx - 58, y: my - 15, width: 116, height: 30, rx: 6, fill: "#f1f1f3", stroke: "#d2d4dc" }));
+    svg.appendChild(
+      svgEl("rect", {
+        x: mx - memHalfW, y: my - memHalfH, width: memHalfW * 2, height: memHalfH * 2,
+        rx: 6, fill: "#f1f1f3", stroke: "#d2d4dc",
+      })
+    );
     var memLabel = svgEl("text", {
       x: mx, y: my, "text-anchor": "middle", "dominant-baseline": "middle",
       "font-family": "monospace", "font-size": 9, fill: "#6f6f6f",
     });
-    memLabel.textContent = truncate(String(memory.memory || "").replace(/\s+/g, " "), 16);
+    memLabel.textContent = truncate(memoryLabel(memory), 18) || "(memory)";
     svg.appendChild(memLabel);
   }
 
@@ -816,6 +926,8 @@ function init() {
       state.activeFilter = state.activeFilter === name ? "" : name;
       renderTags();
       renderDocuments();
+      renderGraph();
+      return;
     }
   });
 

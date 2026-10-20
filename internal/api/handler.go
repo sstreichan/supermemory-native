@@ -444,19 +444,88 @@ func (h *Handler) handleListDocuments(w http.ResponseWriter, r *http.Request) {
 }
 
 // documentTitle derives a short single-line title from a memory body.
+// OKF-aware extraction order:
+//  1. the `title:` field inside a leading `---` frontmatter block
+//     (surrounding quotes stripped);
+//  2. otherwise the first non-empty line outside the frontmatter that is not
+//     a `---` delimiter nor a frontmatter key line, with a leading markdown
+//     heading `#` marker stripped;
+//  3. otherwise the literal first line (unchanged plain-text behaviour),
+//     falling back to "(untitled)".
 func documentTitle(content string) string {
+	if title, ok := okfTitle(content); ok {
+		return clipTitle(title)
+	}
+	// Final fallback: original first-line behaviour for plain text.
 	line := content
 	if idx := strings.IndexAny(line, "\r\n"); idx >= 0 {
 		line = line[:idx]
 	}
-	line = strings.TrimSpace(line)
+	return clipTitle(strings.TrimSpace(line))
+}
+
+// okfTitle extracts the OKF-derived title candidate from a document body.
+// It returns ok=false when content is empty or contains only frontmatter
+// delimiters and key lines, in which case documentTitle falls back to the
+// first-line rule.
+func okfTitle(content string) (string, bool) {
+	inFrontmatter := false
+	sawFrontmatter := false
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" {
+			continue
+		}
+		if line == "---" {
+			if !sawFrontmatter {
+				// Opening delimiter of a leading frontmatter block.
+				sawFrontmatter = true
+				inFrontmatter = true
+			} else if inFrontmatter {
+				// Closing delimiter; the body follows.
+				inFrontmatter = false
+			}
+			continue
+		}
+		if inFrontmatter {
+			key, value, found := strings.Cut(line, ":")
+			if !found || strings.TrimSpace(key) != "title" {
+				continue // other frontmatter key line
+			}
+			if title := unquoteTitleValue(value); title != "" {
+				return title, true
+			}
+			continue // empty `title:` — try the body instead
+		}
+		// First meaningful body line; strip a markdown heading marker.
+		line = strings.TrimLeft(line, "#")
+		return strings.TrimSpace(line), true
+	}
+	return "", false
+}
+
+// unquoteTitleValue trims a frontmatter value and strips one pair of
+// surrounding double or single quotes.
+func unquoteTitleValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if q := value[0]; (q == '"' || q == '\'') && value[len(value)-1] == q {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
+}
+
+// clipTitle bounds a title to 80 runes and substitutes "(untitled)" for
+// empty results.
+func clipTitle(line string) string {
+	if line == "" {
+		return "(untitled)"
+	}
 	const maxRunes = 80
 	runes := []rune(line)
 	if len(runes) > maxRunes {
-		line = string(runes[:maxRunes]) + "…"
-	}
-	if line == "" {
-		return "(untitled)"
+		return string(runes[:maxRunes]) + "…"
 	}
 	return line
 }
