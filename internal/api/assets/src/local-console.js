@@ -17,6 +17,17 @@ var state = {
   memoryLoaded: false,
   busy: false,
   apiKey: "",
+  namespaces: [],
+  nsPage: 1,
+  nsPagination: { totalItems: 0, totalPages: 1, currentPage: 1 },
+  nsLoaded: false,
+  nsSelected: "",
+  nsDocs: [],
+  nsDocPage: 1,
+  nsDocPagination: { totalItems: 0, totalPages: 1, currentPage: 1 },
+  nsDetail: null,
+  nsSearchResults: [],
+  nsSearched: false,
 };
 
 var JSON_HEADERS = { "Content-Type": "application/json" };
@@ -261,6 +272,93 @@ function triggerSync() {
   return fetchJson("/v3/sync", { method: "POST", headers: JSON_HEADERS, body: "{}" });
 }
 
+/* ── v5 namespace API ────────────────────────────────────────────────── */
+
+/* Namespace names are path segments; encode so `smoke:demo` and slashes in
+ * user input survive. */
+function nsPath(name) {
+  return "/ns/" + encodeURIComponent(name || "");
+}
+
+function failNote(err) {
+  showError(err && err.message ? err.message : String(err));
+}
+
+function nsQuery(page, limit) {
+  return "?page=" + page + "&limit=" + limit;
+}
+
+function loadNamespaces(page) {
+  state.nsPage = page && page > 0 ? page : 1;
+  var url = "/namespaces" + nsQuery(state.nsPage, 20);
+  return fetchJson(url, { method: "GET" }).then(function (data) {
+    data = data || {};
+    state.namespaces = Array.isArray(data.namespaces) ? data.namespaces : [];
+    state.nsPagination = data.pagination || { totalItems: 0, totalPages: 1, currentPage: state.nsPage };
+    state.nsLoaded = true;
+  });
+}
+
+function loadNsDocuments(page) {
+  if (!state.nsSelected) return Promise.resolve();
+  state.nsDocPage = page && page > 0 ? page : 1;
+  var url = nsPath(state.nsSelected) + "/list/documents" + nsQuery(state.nsDocPage, 10);
+  return fetchJson(url, { method: "POST", headers: JSON_HEADERS, body: "{}" }).then(function (data) {
+    data = data || {};
+    state.nsDocs = Array.isArray(data.documents) ? data.documents : [];
+    state.nsDocPagination = data.pagination || { totalItems: 0, totalPages: 1, currentPage: state.nsDocPage };
+  });
+}
+
+function openNsDocument(id) {
+  if (!state.nsSelected || !id) return Promise.resolve();
+  var url = nsPath(state.nsSelected) + "/document/" + encodeURIComponent(id) + "?include=chunks,memories";
+  return fetchJson(url, { method: "GET" })
+    .then(function (doc) {
+      state.nsDetail = doc || null;
+      renderNsDetail();
+    })
+    .catch(failNote);
+}
+
+function createNsDocument(content, id) {
+  if (!state.nsSelected || !content) return Promise.resolve(null);
+  var body = { content: content };
+  if (id) body.id = id;
+  return fetchJson(nsPath(state.nsSelected) + "/document", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+function deleteNsDocument(id) {
+  if (!state.nsSelected || !id) return Promise.resolve(null);
+  return fetchJson(nsPath(state.nsSelected) + "/document", {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ ids: [id] }),
+  });
+}
+
+function deleteNsNamespace(name) {
+  return fetchJson(nsPath(name), { method: "DELETE" });
+}
+
+function searchNamespace(query, mode, limit) {
+  return fetchJson(nsPath(state.nsSelected) + "/search", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ query: query, searchMode: mode || "hybrid", limit: limit || 10 }),
+  }).then(function (data) {
+    data = data || {};
+    state.nsSearchResults = Array.isArray(data.results) ? data.results : [];
+    state.nsSearched = true;
+    renderNsSearch();
+  });
+}
+
+
 /* ── derived values ──────────────────────────────────────────────────── */
 
 function totalMemories() {
@@ -495,6 +593,236 @@ function renderPagination() {
   next.disabled = page >= totalPages;
   next.setAttribute("data-page", String(page + 1));
   el.appendChild(next);
+}
+
+/* ── namespace rendering ─────────────────────────────────────────────── */
+
+function setNsStatus(text) {
+  var el = byId("ns-status");
+  if (el) el.textContent = text || "";
+}
+
+function renderNsHeader() {
+  var title = byId("ns-current");
+  if (title) title.textContent = state.nsSelected || "select a namespace";
+  var del = byId("ns-delete");
+  if (del) del.hidden = !state.nsSelected;
+  var total = byId("ns-doc-total");
+  if (total) total.textContent = state.nsSelected ? "· " + (Number(state.nsDocPagination.totalItems) || 0) : "";
+  var sub = byId("ns-search-sub");
+  if (sub) sub.textContent = state.nsSelected ? "· " + state.nsSelected : "";
+}
+
+function renderNamespaces() {
+  var list = byId("ns-list");
+  if (!list) return;
+  clear(list);
+  if (state.namespaces.length === 0) {
+    list.appendChild(h("li", "mem-empty", "No namespaces yet — open one by name above."));
+  }
+  for (var i = 0; i < state.namespaces.length; i++) {
+    var ns = state.namespaces[i] || {};
+    var name = ns.namespace || ns.id || "";
+    var item = h("li");
+    var row = h("button", "ns-row" + (state.nsSelected === name ? " active" : ""));
+    row.type = "button";
+    row.setAttribute("data-ns", name);
+    var main = h("span", "ns-row-main");
+    main.appendChild(h("span", "ns-name", name));
+    if (ns.description) main.appendChild(h("span", "ns-counts", truncate(ns.description, 44)));
+    row.appendChild(main);
+    row.appendChild(
+      h("span", "ns-counts",
+        (Number(ns.documentCount) || 0) + " docs\n" + (Number(ns.memoryCount) || 0) + " mems")
+    );
+    item.appendChild(row);
+    list.appendChild(item);
+  }
+  renderNsPagination();
+}
+
+/* Shared prev/next strip; `pageAttr` keeps the two v5 lists and the legacy
+ * document list from stealing each other's clicks. */
+function nsPager(el, pag, pageAttr) {
+  clear(el);
+  var page = Number(pag.currentPage) || 1;
+  var totalPages = Math.max(1, Number(pag.totalPages) || 1);
+  var prev = h("button", "link-btn", "← prev");
+  prev.type = "button";
+  prev.disabled = page <= 1;
+  prev.setAttribute(pageAttr, String(page - 1));
+  el.appendChild(prev);
+  el.appendChild(h("span", null, "page " + page + " / " + totalPages + " · " + (Number(pag.totalItems) || 0) + " items"));
+  var next = h("button", "link-btn", "next →");
+  next.type = "button";
+  next.disabled = page >= totalPages;
+  next.setAttribute(pageAttr, String(page + 1));
+  el.appendChild(next);
+}
+
+function renderNsPagination() {
+  var el = byId("ns-pagination");
+  if (!el) return;
+  nsPager(el, state.nsPagination || {}, "data-ns-page");
+}
+
+function renderNsDocPagination() {
+  var el = byId("ns-doc-pagination");
+  if (!el) return;
+  nsPager(el, state.nsDocPagination || {}, "data-ns-doc-page");
+}
+
+function renderNsDocuments() {
+  var list = byId("ns-doc-list");
+  if (!list) return;
+  clear(list);
+
+  if (!state.nsSelected) {
+    list.appendChild(h("p", "empty-note", "No namespace selected."));
+    renderNsDocPagination();
+    return;
+  }
+  if (state.nsDocs.length === 0) {
+    list.appendChild(h("p", "empty-note", "No documents in this namespace yet."));
+    renderNsDocPagination();
+    return;
+  }
+
+  for (var i = 0; i < state.nsDocs.length; i++) {
+    var doc = state.nsDocs[i] || {};
+    var system = doc.system || {};
+    var row = h("div", "doc-row");
+    row.appendChild(h("span", "mem-dot static"));
+    var main = h("div", "doc-main");
+    main.appendChild(h("p", "doc-title", doc.title || doc.id || "(untitled)"));
+    main.appendChild(h("p", "doc-body", truncate(doc.summary || "", 150)));
+    var meta = h("div", "doc-meta");
+    meta.appendChild(h("span", null, doc.id || ""));
+    meta.appendChild(h("span", "score", system.status || "queued"));
+    meta.appendChild(h("span", null, timeAgo(system.createdAt)));
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    var open = h("button", "link-btn", "open");
+    open.type = "button";
+    open.setAttribute("data-ns-doc", doc.id || "");
+    row.appendChild(open);
+
+    var del = h("button", "link-btn", "delete");
+    del.type = "button";
+    del.setAttribute("data-ns-doc-delete", doc.id || "");
+    row.appendChild(del);
+
+    list.appendChild(row);
+  }
+  renderNsDocPagination();
+}
+
+function detailLines(container, items, prefix, field) {
+  var box = h("div", "ns-scroll");
+  for (var i = 0; i < items.length; i++) {
+    var entry = items[i] || {};
+    var row = h("div", "ns-detail-row");
+    row.appendChild(h("span", "ns-detail-idx", prefix === "m" ? String(i + 1) : String(entry.position === undefined ? i : entry.position)));
+    row.appendChild(h("span", "ns-detail-text", entry[field] || ""));
+    box.appendChild(row);
+  }
+  container.appendChild(box);
+}
+
+function renderNsDetail() {
+  var el = byId("ns-doc-detail");
+  if (!el) return;
+  clear(el);
+  var title = byId("ns-detail-title");
+  var doc = state.nsDetail;
+  if (!doc) {
+    if (title) title.textContent = "document detail";
+    el.appendChild(h("p", "empty-note", "Select a document."));
+    return;
+  }
+  var system = doc.system || {};
+  if (title) title.textContent = doc.id || "document detail";
+
+  var meta = h("div", "doc-meta");
+  meta.appendChild(h("span", null, doc.id || ""));
+  meta.appendChild(h("span", "score", "status " + (system.status || "?")));
+  meta.appendChild(h("span", null, "dreaming " + (system.dreamingStatus || "?")));
+  meta.appendChild(h("span", null, timeAgo(system.updatedAt)));
+  el.appendChild(meta);
+
+  el.appendChild(h("p", "doc-body", truncate(doc.content || "", 360)));
+
+  var chunks = Array.isArray(doc.chunks) ? doc.chunks : [];
+  el.appendChild(h("p", "card-label", "chunks · " + chunks.length));
+  if (chunks.length === 0) {
+    el.appendChild(h("p", "empty-note", "No chunks yet — the document may still be processing."));
+  } else {
+    detailLines(el, chunks, "c", "content");
+  }
+
+  var mems = Array.isArray(doc.memories) ? doc.memories : [];
+  el.appendChild(h("p", "card-label", "memories · " + mems.length));
+  if (mems.length === 0) {
+    el.appendChild(h("p", "empty-note", "No memories extracted."));
+  } else {
+    detailLines(el, mems, "m", "memory");
+  }
+}
+
+function renderNsSearch() {
+  var el = byId("ns-search-results");
+  if (!el) return;
+  clear(el);
+  if (!state.nsSearched) {
+    el.appendChild(h("p", "empty-note", "No search yet."));
+    return;
+  }
+  if (state.nsSearchResults.length === 0) {
+    el.appendChild(h("p", "empty-note", "No matches for that query."));
+    return;
+  }
+  for (var i = 0; i < state.nsSearchResults.length; i++) {
+    var hit = state.nsSearchResults[i] || {};
+    var system = hit.system || {};
+    var row = h("div", "doc-row");
+    row.appendChild(h("span", "mem-dot"));
+    var main = h("div", "doc-main");
+    main.appendChild(h("p", "doc-body", hit.memory || hit.chunk || ""));
+    var meta = h("div", "doc-meta");
+    var similarity = typeof hit.similarity === "number" ? hit.similarity : 0;
+    meta.appendChild(h("span", "score", "similarity " + similarity.toFixed(3)));
+    meta.appendChild(h("span", null, hit.memory ? "memory" : "chunk"));
+    meta.appendChild(h("span", null, hit.id || ""));
+    meta.appendChild(h("span", null, timeAgo(system.updatedAt || system.createdAt)));
+    main.appendChild(meta);
+    row.appendChild(main);
+    el.appendChild(row);
+  }
+}
+
+function selectNamespace(name) {
+  state.nsSelected = name || "";
+  state.nsDetail = null;
+  state.nsDocs = [];
+  state.nsDocPage = 1;
+  state.nsDocPagination = { totalItems: 0, totalPages: 1, currentPage: 1 };
+  state.nsSearchResults = [];
+  state.nsSearched = false;
+  renderNamespaces();
+  renderNsHeader();
+  renderNsDetail();
+  renderNsSearch();
+  renderNsDocuments();
+  if (!state.nsSelected) return;
+  setNsStatus("loading documents…");
+  loadNsDocuments(1)
+    .then(function () {
+      setNsStatus("");
+      renderNsHeader();
+      renderNsDocuments();
+    })
+    .catch(failNote);
 }
 
 function renderSearchResults(results) {
@@ -739,7 +1067,7 @@ function refresh() {
 
 function setBusy(busy) {
   state.busy = busy;
-  var ids = ["search-btn", "add-btn"];
+  var ids = ["search-btn", "add-btn", "ns-doc-btn", "ns-search-btn", "ns-open-btn"];
   for (var i = 0; i < ids.length; i++) {
     var btn = byId(ids[i]);
     if (btn) btn.disabled = busy;
@@ -747,6 +1075,23 @@ function setBusy(busy) {
 }
 
 /* ── tabs ────────────────────────────────────────────────────────────── */
+
+function tabFromHash() {
+  if (location.hash === "#memory") return "memory";
+  if (location.hash === "#namespaces") return "namespaces";
+  return "overview";
+}
+
+function loadNamespaceTab() {
+  if (state.nsLoaded) return Promise.resolve();
+  return loadNamespaces(1)
+    .then(function () {
+      renderNamespaces();
+      renderNsHeader();
+      renderNsDocuments();
+    })
+    .catch(failNote);
+}
 
 function activate(name, updateHash) {
   var buttons = document.querySelectorAll(".tab-btn");
@@ -764,8 +1109,11 @@ function activate(name, updateHash) {
   if (name === "memory" && !state.memoryLoaded) {
     refresh();
   }
+  if (name === "namespaces") {
+    loadNamespaceTab();
+  }
   if (updateHash) {
-    history.replaceState(null, "", name === "memory" ? "#memory" : location.pathname);
+    history.replaceState(null, "", name === "overview" ? location.pathname : "#" + name);
   }
 }
 
@@ -780,7 +1128,7 @@ function init() {
   }
 
   window.addEventListener("hashchange", function () {
-    activate(location.hash === "#memory" ? "memory" : "overview", false);
+    activate(tabFromHash(), false);
   });
 
   var band = document.querySelector(".resource-band");
@@ -862,6 +1210,75 @@ function init() {
     });
   }
 
+  var nsOpenForm = byId("ns-open-form");
+  if (nsOpenForm) {
+    nsOpenForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var input = byId("ns-open-input");
+      var name = input ? input.value.trim() : "";
+      if (!name) return;
+      selectNamespace(name);
+    });
+  }
+
+  var nsDocForm = byId("ns-doc-form");
+  if (nsDocForm) {
+    nsDocForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!state.nsSelected) {
+        setNsStatus("open a namespace first");
+        return;
+      }
+      var content = byId("ns-doc-content");
+      var idInput = byId("ns-doc-id");
+      var value = content ? content.value.trim() : "";
+      if (!value) return;
+      setBusy(true);
+      setNsStatus("ingesting…");
+      createNsDocument(value, idInput ? idInput.value.trim() : "")
+        .then(function (data) {
+          if (content) content.value = "";
+          if (idInput) idInput.value = "";
+          setNsStatus("queued " + ((data && data.id) || "document") + " — open it to watch status");
+          return loadNsDocuments(1);
+        })
+        .then(function () {
+          renderNsHeader();
+          renderNsDocuments();
+          return loadNamespaces(state.nsPage);
+        })
+        .then(renderNamespaces)
+        .catch(failNote)
+        .then(function () {
+          setBusy(false);
+        });
+    });
+  }
+
+  var nsSearchForm = byId("ns-search-form");
+  if (nsSearchForm) {
+    nsSearchForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!state.nsSelected) {
+        setNsStatus("open a namespace first");
+        return;
+      }
+      var input = byId("ns-search-input");
+      var mode = byId("ns-search-mode");
+      var limitInput = byId("ns-search-limit");
+      var query = input ? input.value.trim() : "";
+      if (!query) return;
+      var limit = limitInput ? Number(limitInput.value) : 10;
+      if (!(limit >= 1 && limit <= 100)) limit = 10;
+      setBusy(true);
+      searchNamespace(query, mode ? mode.value : "hybrid", limit)
+        .catch(failNote)
+        .then(function () {
+          setBusy(false);
+        });
+    });
+  }
+
   var refreshBtn = byId("mem-refresh");
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () {
@@ -886,6 +1303,119 @@ function init() {
           }, 1400);
         });
       }
+      return;
+    }
+
+    var nsBtn = event.target.closest("[data-ns]");
+    if (nsBtn) {
+      selectNamespace(nsBtn.getAttribute("data-ns"));
+      return;
+    }
+
+    var nsPageBtn = event.target.closest("[data-ns-page]");
+    if (nsPageBtn && !nsPageBtn.disabled) {
+      loadNamespaces(Number(nsPageBtn.getAttribute("data-ns-page")))
+        .then(renderNamespaces)
+        .catch(failNote);
+      return;
+    }
+
+    var nsDocBtn = event.target.closest("[data-ns-doc]");
+    if (nsDocBtn) {
+      openNsDocument(nsDocBtn.getAttribute("data-ns-doc"));
+      return;
+    }
+
+    var nsDocDel = event.target.closest("[data-ns-doc-delete]");
+    if (nsDocDel) {
+      var docID = nsDocDel.getAttribute("data-ns-doc-delete");
+      if (!docID || !window.confirm("Delete document " + docID + "?")) return;
+      nsDocDel.disabled = true;
+      deleteNsDocument(docID)
+        .then(function (data) {
+          var errs = (data && Array.isArray(data.errors)) ? data.errors : [];
+          if (errs.length) {
+            setNsStatus(errs[0].error || "delete failed");
+            return null;
+          }
+          if (state.nsDetail && state.nsDetail.id === docID) {
+            state.nsDetail = null;
+            renderNsDetail();
+          }
+          setNsStatus("deleted " + docID);
+          return loadNsDocuments(state.nsDocPage);
+        })
+        .then(function () {
+          renderNsHeader();
+          renderNsDocuments();
+          return loadNamespaces(state.nsPage);
+        })
+        .then(renderNamespaces)
+        .catch(failNote);
+      return;
+    }
+
+    var nsDocPageBtn = event.target.closest("[data-ns-doc-page]");
+    if (nsDocPageBtn && !nsDocPageBtn.disabled) {
+      loadNsDocuments(Number(nsDocPageBtn.getAttribute("data-ns-doc-page")))
+        .then(function () {
+          renderNsHeader();
+          renderNsDocuments();
+        })
+        .catch(failNote);
+      return;
+    }
+
+    var nsReload = event.target.closest("[data-ns-reload]");
+    if (nsReload) {
+      loadNamespaces(state.nsPage).then(renderNamespaces).catch(failNote);
+      return;
+    }
+
+    var nsDocsReload = event.target.closest("[data-ns-docs-reload]");
+    if (nsDocsReload) {
+      loadNsDocuments(state.nsDocPage)
+        .then(function () {
+          renderNsHeader();
+          renderNsDocuments();
+        })
+        .catch(failNote);
+      return;
+    }
+
+    var nsDetailReload = event.target.closest("[data-ns-detail-reload]");
+    if (nsDetailReload) {
+      if (state.nsDetail && state.nsDetail.id) openNsDocument(state.nsDetail.id);
+      return;
+    }
+
+    var nsDelete = event.target.closest("[data-ns-delete]");
+    if (nsDelete) {
+      var target = state.nsSelected;
+      if (!target) return;
+      if (!window.confirm("Delete namespace " + target + " and every document in it?")) return;
+      nsDelete.disabled = true;
+      deleteNsNamespace(target)
+        .then(function (data) {
+          setNsStatus("deleted namespace · " + (Number(data && data.deletedDocumentsCount) || 0) + " documents");
+          state.nsSelected = "";
+          state.nsDetail = null;
+          state.nsDocs = [];
+          state.nsDocPage = 1;
+          state.nsDocPagination = { totalItems: 0, totalPages: 1, currentPage: 1 };
+          state.nsSearchResults = [];
+          state.nsSearched = false;
+          renderNsHeader();
+          renderNsDetail();
+          renderNsSearch();
+          renderNsDocuments();
+          return loadNamespaces(state.nsPage);
+        })
+        .then(renderNamespaces)
+        .catch(failNote)
+        .then(function () {
+          nsDelete.disabled = false;
+        });
       return;
     }
 
@@ -934,7 +1464,7 @@ function init() {
   var list = byId("tag-list");
   if (list) list.setAttribute("aria-label", "Container tags");
 
-  activate(location.hash === "#memory" ? "memory" : "overview", false);
+  activate(tabFromHash(), false);
   refresh();
 }
 

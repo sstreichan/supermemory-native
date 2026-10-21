@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/supermemory-native/supermemory-native/internal/db"
 )
 
 func (h *Handler) v5Search(w http.ResponseWriter, r *http.Request, ns string) {
@@ -92,6 +94,14 @@ func (h *Handler) v5Search(w http.ResponseWriter, r *http.Request, ns string) {
 		}
 	}
 
+	rewriteQuery := false
+	if rwRaw, present := raw["rewriteQuery"]; present {
+		if err := json.Unmarshal(rwRaw, &rewriteQuery); err != nil {
+			v5ValidationError(w, http.StatusBadRequest, raw, "invalid_type", []string{"rewriteQuery"}, "Expected boolean", nil)
+			return
+		}
+	}
+
 	includeDocs, includeRelated, includeForgotten := false, false, false
 	if incRaw, present := raw["include"]; present {
 		var inc map[string]json.RawMessage
@@ -115,7 +125,12 @@ func (h *Handler) v5Search(w http.ResponseWriter, r *http.Request, ns string) {
 		return
 	}
 
-	vecs, err := h.Processor.Provider.GenerateEmbeddings([]string{query})
+	effectiveQuery := query
+	if rewriteQuery {
+		effectiveQuery = h.rewriteQuery(r.Context(), query)
+	}
+
+	vecs, err := h.Processor.Provider.GenerateEmbeddings([]string{effectiveQuery})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to embed query", err)
 		return
@@ -125,10 +140,27 @@ func (h *Handler) v5Search(w http.ResponseWriter, r *http.Request, ns string) {
 		return
 	}
 
-	hits, err := h.Engine.DB.SearchV5(ns, vecs[0], mode, threshold, limit, includeForgotten, filter)
+	candidates, err := h.Engine.DB.RetrievalCandidates(ns, vecs[0], mode, includeForgotten, filter)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "failed to search", err)
 		return
+	}
+	vectorHits := make([]db.Hit, 0, len(candidates))
+	for _, hit := range candidates {
+		if hit.Similarity >= threshold {
+			vectorHits = append(vectorHits, hit)
+		}
+	}
+
+	hits := vectorHits
+	if rerank == "order" || rerank == "aggregate" {
+		hits = fuseRRF(vectorHits, lexicalRanking(effectiveQuery, vectorHits), 0)
+		if h.LLM != nil {
+			hits = h.rerankWithLLM(r.Context(), effectiveQuery, hits)
+		}
+	}
+	if len(hits) > limit {
+		hits = hits[:limit]
 	}
 
 	results := make([]v5SearchHit, 0, len(hits)+1)
@@ -149,9 +181,15 @@ func (h *Handler) v5Search(w http.ResponseWriter, r *http.Request, ns string) {
 			}
 		}
 		if includeRelated && hit.DocumentID != "" {
-			siblings, err := h.Engine.DB.GetMemoriesByDocument(ns, hit.DocumentID, 1000)
+			var siblings []db.MemoryRecord
+			var parents, children []db.MemoryRecord
+			if hit.Kind == "memory" {
+				parents, children, siblings, err = h.Engine.DB.RelatedMemories(ns, hit.ID, 10)
+			} else {
+				siblings, err = h.Engine.DB.GetMemoriesByDocument(ns, hit.DocumentID, 1000)
+			}
 			if err == nil {
-				included.Related = v5RelatedFrom(hit.ID, siblings, 10)
+				included.Related = v5RelatedRecords(hit.ID, parents, children, siblings, 10)
 				hasIncluded = true
 			}
 		}

@@ -657,6 +657,57 @@ footer {
   animation: mem-spin 700ms linear infinite;
 }
 @keyframes mem-spin { to { transform: rotate(360deg); } }
+
+/* ── Namespaces tab (v5) ── */
+.ns-tab { display: flex; flex-direction: column; gap: 14px; }
+#namespaces-root { position: relative; z-index: 2; margin-top: calc(-1 * var(--overlap)); }
+.ns-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 920px) { .ns-grid { grid-template-columns: 320px 1fr; } }
+.ns-card {
+  background: var(--paper);
+  border-radius: 10px;
+  padding: 14px 16px;
+  min-width: 0;
+  box-shadow: var(--shadow-card);
+}
+.ns-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ns-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .12em;
+  color: var(--warm);
+  margin-right: auto;
+  word-break: break-all;
+}
+.ns-list { list-style: none; margin: 0; padding: 0; }
+.ns-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  width: 100%; appearance: none; background: none; border: none;
+  border-top: 1px solid var(--line-soft);
+  padding: 9px 0; text-align: left; cursor: pointer; font-family: inherit;
+}
+.ns-list li:first-child .ns-row { border-top: none; padding-top: 2px; }
+.ns-row:hover .ns-name { color: var(--blue); }
+.ns-row.active .ns-name { color: var(--blue); font-weight: 600; }
+.ns-row-main { display: flex; flex-direction: column; min-width: 0; }
+.ns-name { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); word-break: break-all; }
+.ns-counts { font-family: var(--font-mono); font-size: 10.5px; color: var(--sub); }
+.ns-row .ns-counts { white-space: nowrap; text-align: right; }
+.ns-form-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 760px) { .ns-form-grid { grid-template-columns: 1.6fr .8fr .5fr auto; align-items: end; } }
+.ns-form-grid .field { margin-bottom: 0; }
+.ns-add-grid { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+.ns-add-grid .field { margin-bottom: 0; }
+.ns-scroll { max-height: 240px; overflow-y: auto; }
+.ns-detail-row { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 13px; }
+.ns-detail-row:first-child { border-top: none; padding-top: 2px; }
+.ns-detail-idx { font-family: var(--font-mono); font-size: 10.5px; color: var(--sub); min-width: 22px; }
+.ns-detail-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
 </style>
 </head>
 
@@ -677,6 +728,7 @@ footer {
     <nav class="tabs" aria-label="Page sections">
       <button class="tab-btn active" data-tab="overview" type="button" aria-label="Overview">Overview</button>
       <button class="tab-btn" data-tab="memory" type="button" aria-label="Memory">Memory</button>
+      <button class="tab-btn" data-tab="namespaces" type="button" aria-label="Namespaces">Namespaces</button>
     </nav>
 
     <div class="hero-copy" id="hero-overview">
@@ -691,6 +743,13 @@ footer {
       <p class="subtitle">
         recent documents, the memories extracted from them, and how they
         connect — all from your local store.
+      </p>
+    </div>
+    <div class="hero-copy" id="hero-namespaces" hidden>
+      <h1>one store, many <span class="gradient">namespaces</span>.</h1>
+      <p class="subtitle">
+        v5 namespaces keep documents and their extracted memories isolated.
+        ingest, inspect, search, and delete without leaving this page.
       </p>
     </div>
   </div>
@@ -958,6 +1017,98 @@ footer {
             <h3>container tags</h3>
             <ul class="mem-list" id="panel-tags"></ul>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-namespaces" hidden>
+      <div class="ns-tab" id="namespaces-root">
+        <div class="ns-grid">
+          <div class="ns-card">
+            <div class="ns-head">
+              <span class="ns-title">namespaces</span>
+              <button class="link-btn" type="button" data-ns-reload="1">reload</button>
+            </div>
+            <form id="ns-open-form">
+              <div class="ns-add-grid">
+                <div class="field">
+                  <label for="ns-open-input">open by name</label>
+                  <input class="input" id="ns-open-input" type="text" placeholder="sm_project_default" autocomplete="off" />
+                </div>
+                <button class="btn ghost" type="submit" id="ns-open-btn">Open</button>
+              </div>
+            </form>
+            <ul class="ns-list" id="ns-list"><li class="mem-empty">loading namespaces…</li></ul>
+            <div class="pagination" id="ns-pagination"></div>
+          </div>
+
+          <div class="ns-card">
+            <div class="ns-head">
+              <span class="ns-title" id="ns-current">select a namespace</span>
+              <button class="link-btn" type="button" id="ns-delete" data-ns-delete="1" hidden>delete namespace</button>
+            </div>
+            <p class="empty-note" id="ns-status" aria-live="polite"></p>
+            <form id="ns-doc-form">
+              <div class="field">
+                <label for="ns-doc-content">new document content</label>
+                <textarea class="textarea" id="ns-doc-content" placeholder="e.g. My favorite color is teal." required></textarea>
+              </div>
+              <div class="ns-add-grid">
+                <div class="field">
+                  <label for="ns-doc-id">document id (optional)</label>
+                  <input class="input" id="ns-doc-id" type="text" autocomplete="off" />
+                </div>
+                <button class="btn" type="submit" id="ns-doc-btn">Add document</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="ns-grid">
+          <div class="ns-card">
+            <div class="ns-head">
+              <span class="ns-title">documents <span id="ns-doc-total"></span></span>
+              <button class="link-btn" type="button" data-ns-docs-reload="1">reload</button>
+            </div>
+            <div id="ns-doc-list"><p class="empty-note">No namespace selected.</p></div>
+            <div class="pagination" id="ns-doc-pagination"></div>
+          </div>
+
+          <div class="ns-card">
+            <div class="ns-head">
+              <span class="ns-title" id="ns-detail-title">document detail</span>
+              <button class="link-btn" type="button" data-ns-detail-reload="1">reload</button>
+            </div>
+            <div id="ns-doc-detail"><p class="empty-note">Select a document.</p></div>
+          </div>
+        </div>
+
+        <div class="ns-card">
+          <div class="ns-head">
+            <span class="ns-title">search <span id="ns-search-sub"></span></span>
+          </div>
+          <form id="ns-search-form">
+            <div class="ns-form-grid">
+              <div class="field">
+                <label for="ns-search-input">query</label>
+                <input class="input" id="ns-search-input" type="search" placeholder="what is in this namespace?" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="ns-search-mode">mode</label>
+                <select class="input" id="ns-search-mode">
+                  <option value="hybrid">hybrid</option>
+                  <option value="chunks">chunks</option>
+                  <option value="memories">memories</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="ns-search-limit">limit</label>
+                <input class="input" id="ns-search-limit" type="number" min="1" max="100" value="10" />
+              </div>
+              <button class="btn" type="submit" id="ns-search-btn">Search</button>
+            </div>
+          </form>
+          <div id="ns-search-results"><p class="empty-note">No search yet.</p></div>
         </div>
       </div>
     </div>

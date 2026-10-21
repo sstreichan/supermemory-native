@@ -63,6 +63,33 @@ func TestDashboardJSAPIReferences(t *testing.T) {
 	}
 }
 
+// The dashboard must keep offering the v5 namespace surface: without these
+// paths the third tab would render but silently do nothing.
+func TestDashboardV5NamespacePaths(t *testing.T) {
+	handler, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/local-console.js", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /local-console.js: expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, marker := range []string{
+		"/ns/",
+		"/namespaces",
+		"/list/documents",
+		"/document",
+		"/search",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("bundle is missing v5 path %q: the namespaces tab would be dead", marker)
+		}
+	}
+}
+
 func TestLocalConsoleBundleSize(t *testing.T) {
 	handler, cleanup := setupTestHandler(t)
 	defer cleanup()

@@ -43,6 +43,9 @@ type Document struct {
 	Metadata          map[string]any
 	Grp               map[string]any
 	ResetMemories     bool
+	FileName          string
+	MIMEType          string
+	FileType          string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -356,8 +359,9 @@ func (s *SqliteDB) UpsertDocument(d Document) error {
 		INSERT INTO documents (
 			namespace, id, title, summary, content, metadata, grp, supporting_context,
 			source_date, task_type, dreaming, status, dreaming_status, reset_memories,
+			file_name, mime_type, file_type,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, id) DO UPDATE SET
 			title = excluded.title,
 			summary = excluded.summary,
@@ -371,10 +375,13 @@ func (s *SqliteDB) UpsertDocument(d Document) error {
 			status = excluded.status,
 			dreaming_status = excluded.dreaming_status,
 			reset_memories = excluded.reset_memories,
+			file_name = excluded.file_name,
+			mime_type = excluded.mime_type,
+			file_type = excluded.file_type,
 			updated_at = excluded.updated_at`,
 		d.Namespace, d.ID, d.Title, d.Summary, d.Content, encodeMap(d.Metadata), encodeMap(d.Grp),
 		d.SupportingContext, d.Date, d.TaskType, d.Dreaming, d.Status, d.DreamingStatus,
-		boolInt(d.ResetMemories), d.CreatedAt, d.UpdatedAt,
+		boolInt(d.ResetMemories), d.FileName, d.MIMEType, d.FileType, d.CreatedAt, d.UpdatedAt,
 	)
 	return err
 }
@@ -398,7 +405,7 @@ func scanDocument(sc rowScanner) (Document, error) {
 	err := sc.Scan(
 		&d.Namespace, &d.ID, &d.Title, &d.Summary, &d.Content, &metadata, &grp,
 		&d.SupportingContext, &d.Date, &d.TaskType, &d.Dreaming, &d.Status,
-		&d.DreamingStatus, &reset, &created, &updated,
+		&d.DreamingStatus, &reset, &d.FileName, &d.MIMEType, &d.FileType, &created, &updated,
 	)
 	if err != nil {
 		return Document{}, err
@@ -412,7 +419,8 @@ func scanDocument(sc rowScanner) (Document, error) {
 }
 
 const documentColumns = `namespace, id, title, summary, content, metadata, grp, supporting_context,
-	source_date, task_type, dreaming, status, dreaming_status, reset_memories, created_at, updated_at`
+	source_date, task_type, dreaming, status, dreaming_status, reset_memories,
+	file_name, mime_type, file_type, created_at, updated_at`
 
 func (s *SqliteDB) GetDocument(ns, id string) (Document, bool, error) {
 	row := s.db.QueryRow("SELECT "+documentColumns+" FROM documents WHERE namespace = ? AND id = ?", ns, id)
@@ -433,6 +441,7 @@ func (s *SqliteDB) UpdateDocumentFields(ns, id string, fields map[string]any) (D
 		"title": true, "summary": true, "content": true, "metadata": true, "grp": true,
 		"supporting_context": true, "source_date": true, "task_type": true, "dreaming": true,
 		"status": true, "dreaming_status": true, "reset_memories": true, "updated_at": true,
+		"file_name": true, "mime_type": true, "file_type": true,
 	}
 	var sets []string
 	var args []any

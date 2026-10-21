@@ -34,6 +34,8 @@ type v5DocInput struct {
 	HasDream   bool
 	Context    string
 	HasContext bool
+	// Title is a server-derived title hint (HTML <title> for URL ingestion).
+	Title string
 }
 
 func jsonTypeName(raw json.RawMessage) string {
@@ -261,10 +263,14 @@ func (h *Handler) v5ApplyDocument(ns string, in v5DocInput, defaultTask, default
 	if id == "" {
 		id = memory.GenerateUUID()
 	}
+	title := documentTitle(in.Content)
+	if in.Title != "" {
+		title = in.Title
+	}
 	doc := db.Document{
 		Namespace:         ns,
 		ID:                id,
-		Title:             documentTitle(in.Content),
+		Title:             title,
 		Summary:           readRunes(in.Content, 200),
 		Content:           in.Content,
 		SupportingContext: in.Context,
@@ -295,6 +301,9 @@ func (h *Handler) v5CreateDocument(w http.ResponseWriter, r *http.Request, ns st
 	}
 	in, ok := v5ParseDocInput(w, raw, true, true)
 	if !ok {
+		return
+	}
+	if !h.v5ResolveURLContent(r.Context(), w, &in) {
 		return
 	}
 	if _, err := h.Engine.DB.EnsureNamespace(ns); err != nil {
@@ -483,11 +492,17 @@ func (h *Handler) v5PatchDocument(w http.ResponseWriter, r *http.Request, ns, id
 		writeErr(w, http.StatusNotFound, "Document not found", nil)
 		return
 	}
+	if !h.v5ResolveURLContent(r.Context(), w, &in) {
+		return
+	}
 
 	fields := map[string]any{"updated_at": time.Now().UTC()}
 	if in.HasContent {
 		fields["content"] = in.Content
 		fields["title"] = documentTitle(in.Content)
+		if in.Title != "" {
+			fields["title"] = in.Title
+		}
 		fields["summary"] = readRunes(in.Content, 200)
 		fields["status"] = db.DocumentQueued
 		fields["dreaming_status"] = db.DocumentQueued
@@ -627,10 +642,10 @@ func (h *Handler) v5GetMemory(w http.ResponseWriter, r *http.Request, ns, id str
 				included.Document = v5IncludedDoc(doc)
 			}
 		}
-		if include["related"] && mem.DocumentID != "" {
-			siblings, err := h.Engine.DB.GetMemoriesByDocument(ns, mem.DocumentID, 1000)
+		if include["related"] {
+			parents, children, siblings, err := h.Engine.DB.RelatedMemories(ns, mem.ID, relatedLimit)
 			if err == nil {
-				included.Related = v5RelatedFrom(mem.ID, siblings, relatedLimit)
+				included.Related = v5RelatedRecords(mem.ID, parents, children, siblings, relatedLimit)
 			}
 		}
 		out.Included = &included

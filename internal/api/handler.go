@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/supermemory-native/supermemory-native/internal/api/assets"
@@ -29,6 +30,12 @@ type Handler struct {
 	Processor *memory.Processor
 	port      int
 	apiKey    string
+
+	// Optional retrieval enrichment. LLM is nil unless an OpenAI-compatible
+	// endpoint is configured; the profile cache is only used with an LLM.
+	LLM          *llmConfig
+	profileMu    sync.Mutex
+	profileCache map[string]profileCacheEntry
 }
 
 // NewHandler builds the API handler. The port is parsed once here instead of
@@ -40,10 +47,12 @@ func NewHandler(eng *memory.Engine, port string) *Handler {
 		p = 6767
 	}
 	return &Handler{
-		Engine:    eng,
-		Processor: memory.NewProcessor(eng.DB, eng.Provider),
-		port:      p,
-		apiKey:    os.Getenv("SUPERMEMORY_API_KEY"),
+		Engine:       eng,
+		Processor:    memory.NewProcessor(eng.DB, eng.Provider),
+		port:         p,
+		apiKey:       os.Getenv("SUPERMEMORY_API_KEY"),
+		LLM:          llmFromEnv(),
+		profileCache: map[string]profileCacheEntry{},
 	}
 }
 

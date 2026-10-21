@@ -3,6 +3,7 @@ module github.com/supermemory-native/supermemory-native
 go 1.25.0
 
 require (
+	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.52.0
 )

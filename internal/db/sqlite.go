@@ -106,6 +106,9 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 		status TEXT NOT NULL DEFAULT 'queued',
 		dreaming_status TEXT NOT NULL DEFAULT 'queued',
 		reset_memories INTEGER NOT NULL DEFAULT 0,
+		file_name TEXT NOT NULL DEFAULT '',
+		mime_type TEXT NOT NULL DEFAULT '',
+		file_type TEXT NOT NULL DEFAULT '',
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL,
 		PRIMARY KEY (namespace, id)
@@ -229,6 +232,47 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 		if _, err := db.Exec("UPDATE memories SET updated_at = created_at WHERE updated_at = '' OR updated_at IS NULL"); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to backfill updated_at: %w", err)
+		}
+	}
+
+	// File ingestion metadata columns on documents, added in the same additive
+	// style as the memory columns above.
+	docRows, err := db.Query("PRAGMA table_info(documents)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	docColumns := map[string]string{
+		"file_name": "TEXT NOT NULL DEFAULT ''",
+		"mime_type": "TEXT NOT NULL DEFAULT ''",
+		"file_type": "TEXT NOT NULL DEFAULT ''",
+	}
+	for docRows.Next() {
+		var cid int
+		var name, typeStr string
+		var notnull, pk int
+		var dfltVal sql.NullString
+		if err := docRows.Scan(&cid, &name, &typeStr, &notnull, &dfltVal, &pk); err != nil {
+			docRows.Close()
+			db.Close()
+			return nil, err
+		}
+		delete(docColumns, name)
+	}
+	docRows.Close()
+	if err := docRows.Err(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	pendingDocs := make([]string, 0, len(docColumns))
+	for name := range docColumns {
+		pendingDocs = append(pendingDocs, name)
+	}
+	sort.Strings(pendingDocs)
+	for _, name := range pendingDocs {
+		if _, err := db.Exec("ALTER TABLE documents ADD COLUMN " + name + " " + docColumns[name]); err != nil {
+			db.Close()
+			return nil, err
 		}
 	}
 

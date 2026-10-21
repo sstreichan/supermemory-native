@@ -73,9 +73,10 @@ func (h *Handler) v5Profile(w http.ResponseWriter, r *http.Request, ns string) {
 		buckets = effective
 	}
 
+	static := h.staticProfile(ns, filter, mems)
 	v5Write(w, http.StatusOK, map[string]any{
 		"profile": map[string]any{
-			"static":  []any{},
+			"static":  static,
 			"dynamic": dynamic,
 			"buckets": buckets,
 		},

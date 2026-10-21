@@ -102,7 +102,9 @@ Namespace-scoped routes, unversioned paths, same JSON shapes as the hosted servi
 | `GET`, `PATCH`, `DELETE` | `/ns/{namespace}` | Read, update `supportingContext`, delete (optional `?moveTo=`) |
 | `POST`, `DELETE` | `/ns/{namespace}/document` | Create/append or delete documents |
 | `POST` | `/ns/{namespace}/document/batch` | Ingest up to 600 documents per request |
-| `GET`, `PATCH` | `/ns/{namespace}/document/{id}` | Read (with `include=chunks,memories`) or replace |
+| `POST`, `PATCH` | `/ns/{namespace}/document/{id}` | Read (with `include=chunks,memories`) or replace |
+| `POST` | `/ns/{namespace}/document/file` | Multipart upload; text/PDF extraction, 25 MiB limit |
+| `POST`, `PATCH` | `/ns/{namespace}/document/file/{id}` | Replace or partially update a file-backed document |
 | `POST` | `/ns/{namespace}/list/{documents\|chunks\|memories}` | Paginated lists with `filter`/`include` |
 | `POST` | `/ns/{namespace}/list/documents/memory-counts` | Memory counts for up to 100 document IDs |
 | `GET` | `/ns/{namespace}/memories/{id}` | Read a memory with `include=related,documents` |
@@ -114,7 +116,20 @@ Namespace-scoped routes, unversioned paths, same JSON shapes as the hosted servi
 
 Ingestion is asynchronous: `POST`/`PATCH` return `status: "queued"` and a background worker moves the document through `extracting`, `chunking`, `embedding` and `indexing` to `done` (or `failed`). Poll `GET /ns/{namespace}/document/{id}` until `system.status` is `done`. Reusing an existing `id` appends to the document; `PATCH` replaces the content and resets its chunks and memories.
 
-Not implemented: file/URL ingestion (`document/file`), connectors, organization settings and feedback. `rerank: "order"` and `rewriteQuery` are accepted but have no model backing, and `moveTo` runs synchronously and answers `200`.
+A `content` value that is an absolute `http(s)` URL is fetched server-side (10 s timeout, ≤5 redirects, 10 MiB, allow-listed content types) and stored as text. The fetcher rejects loopback, private, link-local, multicast and ULA targets on every redirect to prevent SSRF.
+
+File uploads accept a text layer only: `fileType=text` (plain text, Markdown, HTML, JSON, CSV, XML, YAML, logs, subtitles) and `fileType=pdf`; PDFs are extracted with a pure-Go parser and OCR is not included. `image`, `video` and `audio` return `400 invalid_value` on `fileType`. Uploads are capped at 25 MiB.
+
+Search ranks vector hits and lexical BM25 matches with reciprocal rank fusion for `rerank: "order"`/`"aggregate"`; `rerank: "none"` keeps pure cosine order. `include.related` splits older/newer embedding neighbours into `parents`/`children` and same-document memories into `siblings` (structural relations, not dreaming output).
+
+Optional enrichment via an OpenAI-compatible chat endpoint (`SUPERMEMORY_LLM_BASE_URL`, `SUPERMEMORY_LLM_MODEL`, `SUPERMEMORY_LLM_API_KEY`):
+- `rewriteQuery: true` rewrites the query before embedding and lexical matching;
+- `rerank: "order"` asks the model for a listwise order of the top 30 candidates;
+- `POST /profile` synthesizes the `static` facts (cached five minutes).
+
+Without these variables every path stays deterministic and offline; malformed or failed model responses fall back to the deterministic ranking.
+
+Not implemented: connectors, organization settings and feedback; `moveTo` runs synchronously and answers `200`. The dashboard exposes a **Namespaces** tab for listing documents, inspecting chunks/memories and searching the v5 API.
 
 The legacy `/v3/*` and `/v4/*` routes remain unchanged and continue to serve existing clients.
 
@@ -148,6 +163,11 @@ export EMBEDDING_PROVIDER=gemini
 # export EMBEDDING_MODEL=text-embedding-004
 # export OPENAI_API_KEY=...          # for EMBEDDING_PROVIDER=openai
 # export OPENAI_BASE_URL=...         # optional OpenAI-compatible endpoint
+
+# Optional: query rewriting, listwise reranking, static profile synthesis
+# export SUPERMEMORY_LLM_BASE_URL=https://your-llm/v1
+# export SUPERMEMORY_LLM_MODEL=your-model
+# export SUPERMEMORY_LLM_API_KEY=...
 ```
 
 `EMBEDDING_PROVIDER=mock` generates deterministic bag-of-words vectors locally; it is intended for offline smoke tests, not production retrieval quality.
@@ -201,7 +221,7 @@ The codebase maintains **100% coverage** on all business logic, entirely mock-dr
 - `internal/vault`: Tests complete OKF document parsing, parsing without frontmatter, default YAML injectors, YAML formatting, and full physical file I/O operations (write, read, listing, deletions).
 - `internal/db`: Tests schema generation, dynamic column migrations, inserts, lists, and semantic searches.
 - `internal/memory`: Tests full engine pipeline including UUID generation, automatic database startup migration, physical file hydration, and full bi-directional vault directory synchronization.
-- `internal/api`: Tests standard HTTP handlers, CORS, OPTIONS requests, bad JSON payloads, and mock sync requests completely offline.
+- `internal/api`: Tests standard HTTP handlers, CORS, OPTIONS requests, bad JSON payloads, v5 documents/lists/search/profiles, multipart and URL ingestion (including SSRF guards), retrieval fusion and mock sync requests completely offline.
 
 The optional live contract test runs the same lifecycle against the hosted API (or a local daemon via `SM_TARGET_URL`):
 

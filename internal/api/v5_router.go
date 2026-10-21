@@ -95,7 +95,12 @@ func (h *Handler) serveV5(w http.ResponseWriter, r *http.Request) {
 		ns, resource, sub := parts[1], parts[2], parts[3]
 		switch resource {
 		case "document":
-			if sub == "batch" {
+			if sub == "file" {
+				if r.Method == http.MethodPost {
+					h.v5CreateDocumentFile(w, r, ns)
+					return
+				}
+			} else if sub == "batch" {
 				if r.Method == http.MethodPost {
 					h.v5CreateDocumentBatch(w, r, ns)
 					return
@@ -141,6 +146,16 @@ func (h *Handler) serveV5(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case 5:
+		if parts[2] == "document" && parts[3] == "file" {
+			switch r.Method {
+			case http.MethodPost:
+				h.v5ReplaceDocumentFile(w, r, parts[1], parts[4])
+				return
+			case http.MethodPatch:
+				h.v5PatchDocumentFile(w, r, parts[1], parts[4])
+				return
+			}
+		}
 		if parts[2] == "list" && parts[3] == "documents" && parts[4] == "memory-counts" {
 			if r.Method == http.MethodPost {
 				h.v5MemoryCounts(w, r, parts[1])

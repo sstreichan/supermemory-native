@@ -22,3 +22,10 @@ __pycache__/
 # local secrets
 .env
 .env.*
+
+# Local build output
+/dist/
+
+# Local analysis artifacts
+.playwright-cli/
+*.har
