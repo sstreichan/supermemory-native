@@ -83,6 +83,53 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 	);
 	CREATE INDEX IF NOT EXISTS idx_memories_container ON memories(container_tag);
 	CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+
+	CREATE TABLE IF NOT EXISTS namespaces (
+		name TEXT PRIMARY KEY,
+		supporting_context TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS documents (
+		namespace TEXT NOT NULL,
+		id TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		content TEXT NOT NULL,
+		metadata TEXT NOT NULL DEFAULT '{}',
+		grp TEXT NOT NULL DEFAULT '{}',
+		supporting_context TEXT NOT NULL DEFAULT '',
+		source_date TEXT NOT NULL DEFAULT '',
+		task_type TEXT NOT NULL DEFAULT 'memory',
+		dreaming TEXT NOT NULL DEFAULT 'dynamic',
+		status TEXT NOT NULL DEFAULT 'queued',
+		dreaming_status TEXT NOT NULL DEFAULT 'queued',
+		reset_memories INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		PRIMARY KEY (namespace, id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_documents_ns_created ON documents(namespace, created_at);
+	CREATE TABLE IF NOT EXISTS chunks (
+		id TEXT PRIMARY KEY,
+		namespace TEXT NOT NULL,
+		document_id TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		content TEXT NOT NULL,
+		type TEXT NOT NULL DEFAULT 'text',
+		metadata TEXT NOT NULL DEFAULT '{}',
+		vector BLOB NOT NULL,
+		norm REAL NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_chunks_ns_doc ON chunks(namespace, document_id);
+	CREATE TABLE IF NOT EXISTS buckets (
+		namespace TEXT NOT NULL,
+		key TEXT NOT NULL,
+		description TEXT NOT NULL,
+		PRIMARY KEY (namespace, key)
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -99,6 +146,16 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 	hasFilePath := false
 	hasNorm := false
 	hasSyncedAt := false
+	newColumns := map[string]string{
+		"document_id":  "TEXT NOT NULL DEFAULT ''",
+		"metadata":     "TEXT NOT NULL DEFAULT '{}'",
+		"is_forgotten": "INTEGER NOT NULL DEFAULT 0",
+		"is_inference": "INTEGER NOT NULL DEFAULT 0",
+		"is_static":    "INTEGER NOT NULL DEFAULT 0",
+		"is_latest":    "INTEGER NOT NULL DEFAULT 1",
+		"version":      "INTEGER NOT NULL DEFAULT 1",
+		"updated_at":   "DATETIME NOT NULL DEFAULT ''",
+	}
 	for rows.Next() {
 		var cid int
 		var name, typeStr string
@@ -116,6 +173,8 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 			hasNorm = true
 		case "synced_at":
 			hasSyncedAt = true
+		default:
+			delete(newColumns, name)
 		}
 	}
 	rows.Close()
@@ -151,6 +210,25 @@ func NewSqliteDB(dbPath string) (*SqliteDB, error) {
 		if _, err := db.Exec("UPDATE memories SET synced_at = created_at WHERE synced_at = '' OR synced_at IS NULL"); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to backfill synced_at: %w", err)
+		}
+	}
+
+	// v5 columns. Applied in sorted order so schema evolution is deterministic.
+	pending := make([]string, 0, len(newColumns))
+	for name := range newColumns {
+		pending = append(pending, name)
+	}
+	sort.Strings(pending)
+	for _, name := range pending {
+		if _, err := db.Exec("ALTER TABLE memories ADD COLUMN " + name + " " + newColumns[name]); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if _, ok := newColumns["updated_at"]; ok {
+		if _, err := db.Exec("UPDATE memories SET updated_at = created_at WHERE updated_at = '' OR updated_at IS NULL"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to backfill updated_at: %w", err)
 		}
 	}
 
@@ -344,7 +422,7 @@ func insertTopK(results *[]SearchResult, sr SearchResult, limit int) {
 
 // GetUnmigratedMemories retrieves all memories that have an empty file_path.
 func (s *SqliteDB) GetUnmigratedMemories() ([]Memory, error) {
-	rows, err := s.db.Query("SELECT id, content, container_tag, created_at FROM memories WHERE file_path = ''")
+	rows, err := s.db.Query("SELECT id, content, container_tag, created_at FROM memories WHERE file_path = '' AND document_id = ''")
 	if err != nil {
 		return nil, err
 	}

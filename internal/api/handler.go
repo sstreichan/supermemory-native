@@ -25,9 +25,10 @@ import (
 const maxBodyBytes = 1 << 20 // 1 MiB
 
 type Handler struct {
-	Engine *memory.Engine
-	port   int
-	apiKey string
+	Engine    *memory.Engine
+	Processor *memory.Processor
+	port      int
+	apiKey    string
 }
 
 // NewHandler builds the API handler. The port is parsed once here instead of
@@ -39,9 +40,10 @@ func NewHandler(eng *memory.Engine, port string) *Handler {
 		p = 6767
 	}
 	return &Handler{
-		Engine: eng,
-		port:   p,
-		apiKey: os.Getenv("SUPERMEMORY_API_KEY"),
+		Engine:    eng,
+		Processor: memory.NewProcessor(eng.DB, eng.Provider),
+		port:      p,
+		apiKey:    os.Getenv("SUPERMEMORY_API_KEY"),
 	}
 }
 
@@ -294,6 +296,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/local-console.js" {
 		h.serveAsset(w, r, "local-console.js", "application/javascript; charset=utf-8")
+		return
+	}
+
+	// v5 namespace-scoped routes run before the legacy auth path so their
+	// error envelope matches the hosted API.
+	if p := r.URL.Path; p == "/namespaces" || p == "/ns" || strings.HasPrefix(p, "/ns/") {
+		if !h.authorized(r) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="supermemory"`)
+			writeErr(w, http.StatusUnauthorized, "Unauthorized", nil)
+			return
+		}
+		h.serveV5(w, r)
 		return
 	}
 

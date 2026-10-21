@@ -18,3 +18,7 @@ deploy.sh
 # Python bytecode (docs tooling)
 __pycache__/
 *.pyc
+
+# local secrets
+.env
+.env.*

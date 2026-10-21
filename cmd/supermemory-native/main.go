@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -106,12 +107,23 @@ func main() {
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		log.Printf("Using OpenAI Embedding Provider with model: %s, baseURL: %s", model, baseURL)
 		provider = embedding.NewOpenAIProvider(model, baseURL, apiKey)
+	case "mock":
+		log.Println("Using deterministic mock embedding provider")
+		provider = embedding.NewMockProvider()
 	default:
 		log.Println("Using Gemini Cloud Embedding Provider")
 		provider = embedding.NewGeminiProvider(apiKey)
 	}
 	engine := memory.NewEngine(sdb, provider, v)
 	handler := api.NewHandler(engine, port)
+
+	// v5 ingestion is asynchronous: drain the document queue in the background.
+	go func() {
+		for {
+			_, _ = handler.Processor.ProcessOnce(context.Background())
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
 
 	// 5. Start Server
 	addr := fmt.Sprintf("%s:%s", host, port)

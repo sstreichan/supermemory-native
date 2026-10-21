@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 func contractBaseURL() string {
@@ -32,14 +35,15 @@ func contractContainer() string {
 
 func contractCall(t *testing.T, method, path string, body interface{}) ([]byte, int) {
 	t.Helper()
-	var buf *bytes.Buffer
+	var reader io.Reader
 	if body != nil {
-		buf = new(bytes.Buffer)
+		buf := new(bytes.Buffer)
 		if err := json.NewEncoder(buf).Encode(body); err != nil {
 			t.Fatalf("encode body: %v", err)
 		}
+		reader = buf
 	}
-	req, _ := http.NewRequest(method, contractBaseURL()+path, buf)
+	req, _ := http.NewRequest(method, contractBaseURL()+path, reader)
 	req.Header.Set("Authorization", "Bearer "+contractAPIKey(t))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -145,7 +149,9 @@ func TestContract_Forget(t *testing.T) {
 	resp, _ := contractCall(t, "POST", "/v3/documents", map[string]interface{}{
 		"content": "temporary memory to forget", "containerTag": tag,
 	})
-	var addResult struct{ ID string `json:"id"` }
+	var addResult struct {
+		ID string `json:"id"`
+	}
 	json.Unmarshal(resp, &addResult)
 	memID := addResult.ID
 	if memID == "" {
@@ -175,4 +181,86 @@ func TestContract_Forget(t *testing.T) {
 		}
 	}
 	t.Logf("forget verified: memory %s no longer searchable", memID)
+}
+
+// TestContractV5Lifecycle exercises the v5 namespace surface end to end. Set
+// SM_TARGET_URL to run it against a local daemon (with SUPERMEMORY_API_KEY set
+// to that daemon's key).
+func TestContractV5Lifecycle(t *testing.T) {
+	ns := contractContainer() + "-v5"
+	id := fmt.Sprintf("v5-doc-%d", os.Getpid())
+	marker := fmt.Sprintf("v5-contract-marker-%d", os.Getpid())
+
+	t.Cleanup(func() {
+		_, _ = contractCall(t, "DELETE", "/ns/"+ns, nil)
+	})
+
+	body, status := contractCall(t, "POST", "/ns/"+ns+"/document", map[string]interface{}{
+		"id": id, "content": "The contract marker is " + marker + ".",
+	})
+	if status != 200 {
+		t.Fatalf("create: expected 200, got %d: %s", status, body)
+	}
+
+	waitDone := func() {
+		for attempt := 0; attempt < 20; attempt++ {
+			resp, code := contractCall(t, "GET", "/ns/"+ns+"/document/"+id+"?include=chunks,memories", nil)
+			if code == 200 {
+				var doc struct {
+					System struct {
+						Status string `json:"status"`
+					} `json:"system"`
+				}
+				_ = json.Unmarshal(resp, &doc)
+				if doc.System.Status == "done" {
+					return
+				}
+			}
+			time.Sleep(3 * time.Second)
+		}
+		t.Fatalf("document did not reach status done")
+	}
+	waitDone()
+
+	resp, code := contractCall(t, "POST", "/ns/"+ns+"/list/documents", map[string]interface{}{})
+	if code != 200 {
+		t.Fatalf("list: expected 200, got %d: %s", code, resp)
+	}
+	if !strings.Contains(string(resp), id) {
+		t.Fatalf("list does not contain %s: %s", id, resp)
+	}
+
+	resp, code = contractCall(t, "POST", "/ns/"+ns+"/search", map[string]interface{}{"query": marker})
+	if code != 200 || !strings.Contains(string(resp), marker) {
+		t.Fatalf("search did not find marker: %d %s", code, resp)
+	}
+
+	updated := marker + " updated"
+	_, code = contractCall(t, "PATCH", "/ns/"+ns+"/document/"+id, map[string]interface{}{"content": updated})
+	if code != 200 {
+		t.Fatalf("patch: expected 200, got %d", code)
+	}
+	waitDone()
+	resp, code = contractCall(t, "GET", "/ns/"+ns+"/document/"+id, nil)
+	if code != 200 || !strings.Contains(string(resp), updated) {
+		t.Fatalf("patched content missing: %d %s", code, resp)
+	}
+
+	_, code = contractCall(t, "DELETE", "/ns/"+ns+"/document", map[string]interface{}{"ids": []string{id}})
+	if code != 200 {
+		t.Fatalf("delete document: expected 200, got %d", code)
+	}
+	_, code = contractCall(t, "GET", "/ns/"+ns+"/document/"+id, nil)
+	if code != 404 {
+		t.Fatalf("deleted document still readable: %d", code)
+	}
+
+	_, code = contractCall(t, "DELETE", "/ns/"+ns, nil)
+	if code != 200 {
+		t.Fatalf("delete namespace: expected 200, got %d", code)
+	}
+	_, code = contractCall(t, "GET", "/ns/"+ns, nil)
+	if code != 404 {
+		t.Fatalf("deleted namespace still readable: %d", code)
+	}
 }

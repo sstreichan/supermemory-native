@@ -90,6 +90,36 @@ By default, the server leverages highly optimized cloud embedding APIs (like Goo
 
 ---
 
+## API Surface
+
+### v5 (current upstream API)
+
+Namespace-scoped routes, unversioned paths, same JSON shapes as the hosted service:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/namespaces`, `/ns` | List namespaces with pagination and counts |
+| `GET`, `PATCH`, `DELETE` | `/ns/{namespace}` | Read, update `supportingContext`, delete (optional `?moveTo=`) |
+| `POST`, `DELETE` | `/ns/{namespace}/document` | Create/append or delete documents |
+| `POST` | `/ns/{namespace}/document/batch` | Ingest up to 600 documents per request |
+| `GET`, `PATCH` | `/ns/{namespace}/document/{id}` | Read (with `include=chunks,memories`) or replace |
+| `POST` | `/ns/{namespace}/list/{documents\|chunks\|memories}` | Paginated lists with `filter`/`include` |
+| `POST` | `/ns/{namespace}/list/documents/memory-counts` | Memory counts for up to 100 document IDs |
+| `GET` | `/ns/{namespace}/memories/{id}` | Read a memory with `include=related,documents` |
+| `DELETE` | `/ns/{namespace}/memories` | Forget memories by ID (soft delete) |
+| `DELETE` | `/ns/{namespace}/memories/semantic` | Semantic forget; requires explicit `dryRun` |
+| `POST` | `/ns/{namespace}/search` | Chunk, memory or hybrid search with `filter`, `threshold`, `rerank` |
+| `POST` | `/ns/{namespace}/profile` | Static/dynamic profile and buckets |
+| `GET`, `PUT`, `DELETE` | `/ns/{namespace}/profile/buckets` | Read, merge or remove buckets |
+
+Ingestion is asynchronous: `POST`/`PATCH` return `status: "queued"` and a background worker moves the document through `extracting`, `chunking`, `embedding` and `indexing` to `done` (or `failed`). Poll `GET /ns/{namespace}/document/{id}` until `system.status` is `done`. Reusing an existing `id` appends to the document; `PATCH` replaces the content and resets its chunks and memories.
+
+Not implemented: file/URL ingestion (`document/file`), connectors, organization settings and feedback. `rerank: "order"` and `rewriteQuery` are accepted but have no model backing, and `moveTo` runs synchronously and answers `200`.
+
+The legacy `/v3/*` and `/v4/*` routes remain unchanged and continue to serve existing clients.
+
+---
+
 ## 🛠️ Get Started
 
 ### Prerequisites
@@ -112,7 +142,15 @@ Create a `.env` file or export the following in your environment:
 ```bash
 export PORT=6767
 export SUPERMEMORY_API_KEY="your_gemini_api_key_here"
+
+# Embeddings: gemini (default), openai, ollama, or mock
+export EMBEDDING_PROVIDER=gemini
+# export EMBEDDING_MODEL=text-embedding-004
+# export OPENAI_API_KEY=...          # for EMBEDDING_PROVIDER=openai
+# export OPENAI_BASE_URL=...         # optional OpenAI-compatible endpoint
 ```
+
+`EMBEDDING_PROVIDER=mock` generates deterministic bag-of-words vectors locally; it is intended for offline smoke tests, not production retrieval quality.
 
 `SUPERMEMORY_API_KEY` doubles as the daemon's API key. Every client that is not
 loopback — LAN, reverse proxy (Caddy/nginx), the internet — must send it as
@@ -164,3 +202,9 @@ The codebase maintains **100% coverage** on all business logic, entirely mock-dr
 - `internal/db`: Tests schema generation, dynamic column migrations, inserts, lists, and semantic searches.
 - `internal/memory`: Tests full engine pipeline including UUID generation, automatic database startup migration, physical file hydration, and full bi-directional vault directory synchronization.
 - `internal/api`: Tests standard HTTP handlers, CORS, OPTIONS requests, bad JSON payloads, and mock sync requests completely offline.
+
+The optional live contract test runs the same lifecycle against the hosted API (or a local daemon via `SM_TARGET_URL`):
+
+```bash
+SUPERMEMORY_API_KEY=<key> go test ./internal/api -tags contract -run TestContractV5Lifecycle -count=1
+```
