@@ -145,7 +145,16 @@ function readResponse(res) {
     }
     if (!res.ok) {
       var message = (data && (data.error || data.message)) || "HTTP " + res.status;
-      throw new Error(message);
+      // v5 errors are arrays of {code,path,message}; format the message instead
+      // of rendering "[object Object]" for validation failures.
+      if (data && Array.isArray(data.error)) {
+        message = data.error
+          .map(function (item) {
+            return item && item.message ? item.message : String(item);
+          })
+          .join("; ");
+      }
+      throw new Error(message || "HTTP " + res.status);
     }
     return data;
   });
@@ -329,6 +338,17 @@ function createNsDocument(content, id) {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
+  });
+}
+
+/* Multipart upload: no Content-Type header, the browser must set the boundary. */
+function uploadNsFile(file) {
+  if (!state.nsSelected || !file) return Promise.resolve(null);
+  var form = new FormData();
+  form.append("file", file, file.name);
+  return fetchJson(nsPath(state.nsSelected) + "/document/file", {
+    method: "POST",
+    body: form,
   });
 }
 
@@ -1239,6 +1259,41 @@ function init() {
         .then(function (data) {
           if (content) content.value = "";
           if (idInput) idInput.value = "";
+          setNsStatus("queued " + ((data && data.id) || "document") + " — open it to watch status");
+          return loadNsDocuments(1);
+        })
+        .then(function () {
+          renderNsHeader();
+          renderNsDocuments();
+          return loadNamespaces(state.nsPage);
+        })
+        .then(renderNamespaces)
+        .catch(failNote)
+        .then(function () {
+          setBusy(false);
+        });
+    });
+  }
+
+  var nsFileForm = byId("ns-file-form");
+  if (nsFileForm) {
+    nsFileForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!state.nsSelected) {
+        setNsStatus("open a namespace first");
+        return;
+      }
+      var input = byId("ns-file");
+      var file = input && input.files && input.files[0];
+      if (!file) {
+        setNsStatus("choose a file first");
+        return;
+      }
+      setBusy(true);
+      setNsStatus("uploading " + file.name + "…");
+      uploadNsFile(file)
+        .then(function (data) {
+          if (input) input.value = "";
           setNsStatus("queued " + ((data && data.id) || "document") + " — open it to watch status");
           return loadNsDocuments(1);
         })

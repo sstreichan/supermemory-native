@@ -82,6 +82,7 @@ func TestDashboardV5NamespacePaths(t *testing.T) {
 		"/namespaces",
 		"/list/documents",
 		"/document",
+		"/document/file",
 		"/search",
 	} {
 		if !strings.Contains(body, marker) {
