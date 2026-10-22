@@ -118,9 +118,21 @@ func main() {
 	handler := api.NewHandler(engine, port)
 
 	// v5 ingestion is asynchronous: drain the document queue in the background.
+	// Transient embedding failures leave the document queued; back off instead
+	// of hammering an unavailable provider.
 	go func() {
+		delay := 500 * time.Millisecond
 		for {
-			_, _ = handler.Processor.ProcessOnce(context.Background())
+			_, err := handler.Processor.ProcessOnce(context.Background())
+			if err != nil && embedding.IsTransient(err) {
+				if delay < 30*time.Second {
+					delay *= 2
+				}
+				log.Printf("ingestion paused: %v (retrying in %s)", err, delay)
+				time.Sleep(delay)
+				continue
+			}
+			delay = 500 * time.Millisecond
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()

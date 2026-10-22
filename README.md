@@ -114,7 +114,7 @@ Namespace-scoped routes, unversioned paths, same JSON shapes as the hosted servi
 | `POST` | `/ns/{namespace}/profile` | Static/dynamic profile and buckets |
 | `GET`, `PUT`, `DELETE` | `/ns/{namespace}/profile/buckets` | Read, merge or remove buckets |
 
-Ingestion is asynchronous: `POST`/`PATCH` return `status: "queued"` and a background worker moves the document through `extracting`, `chunking`, `embedding` and `indexing` to `done` (or `failed`). Poll `GET /ns/{namespace}/document/{id}` until `system.status` is `done`. Reusing an existing `id` appends to the document; `PATCH` replaces the content and resets its chunks and memories.
+Ingestion is asynchronous: `POST`/`PATCH` return `status: "queued"` and a background worker moves the document through `extracting`, `chunking`, `embedding` and `indexing` to `done` (or `failed`). Poll `GET /ns/{namespace}/document/{id}` until `system.status` is `done`. Transient embedding failures (connection errors, 408/429/502/503/504) put the document back into `queued` and pause the worker with exponential backoff (max 30 s) instead of marking it `failed`. Reusing an existing `id` appends to the document; `PATCH` replaces the content and resets its chunks and memories.
 
 A `content` value that is an absolute `http(s)` URL is fetched server-side (10 s timeout, ≤5 redirects, 10 MiB, allow-listed content types) and stored as text. The fetcher rejects loopback, private, link-local, multicast and ULA targets on every redirect to prevent SSRF.
 

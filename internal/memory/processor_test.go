@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/supermemory-native/supermemory-native/internal/db"
+	"github.com/supermemory-native/supermemory-native/internal/embedding"
 )
 
 type testBagProvider struct{ fail bool }
@@ -156,6 +157,36 @@ func TestProcessorFailure(t *testing.T) {
 	doc, _, _ := database.GetDocument("ns", "d1")
 	if doc.Status != db.DocumentFailed || doc.DreamingStatus != db.DocumentFailed {
 		t.Errorf("status = %q/%q", doc.Status, doc.DreamingStatus)
+	}
+}
+
+type transientProvider struct{ testBagProvider }
+
+func (p transientProvider) GenerateEmbeddings([]string) ([][]float32, error) {
+	return nil, &embedding.TransientError{Err: errors.New("provider returned HTTP 502")}
+}
+
+func TestProcessorRequeuesTransientFailure(t *testing.T) {
+	database := newProcessorTestDB(t)
+	p := NewProcessor(database, transientProvider{})
+	seedDoc(t, database, "ns", "d1", "This sentence is long enough to chunk.", "memory")
+
+	processed, err := p.ProcessOnce(context.Background())
+	if !embedding.IsTransient(err) {
+		t.Fatalf("err = %v, want transient, processed=%d", err, processed)
+	}
+	doc, _, _ := database.GetDocument("ns", "d1")
+	if doc.Status != db.DocumentQueued || doc.DreamingStatus != db.DocumentQueued {
+		t.Fatalf("status = %q/%q, want queued/queued", doc.Status, doc.DreamingStatus)
+	}
+
+	p.Provider = testBagProvider{}
+	if _, err := p.ProcessOnce(context.Background()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	doc, _, _ = database.GetDocument("ns", "d1")
+	if doc.Status != db.DocumentDone {
+		t.Fatalf("status = %q, want done", doc.Status)
 	}
 }
 

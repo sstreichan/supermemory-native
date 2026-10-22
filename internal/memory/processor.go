@@ -45,6 +45,12 @@ func (p *Processor) ProcessOnce(ctx context.Context) (int, error) {
 		}
 		return 1, cause
 	}
+	retryLater := func(cause error) (int, error) {
+		// A transient provider failure must not burn the queued document.
+		// Put it back in the queue; the worker backs off before retrying.
+		_, _ = p.DB.UpdateProcessingStatus(doc.Namespace, doc.ID, db.DocumentQueued, db.DocumentQueued)
+		return 1, cause
+	}
 	advance := func(status, dreamingStatus string) (bool, error) {
 		return p.DB.UpdateProcessingStatus(doc.Namespace, doc.ID, status, dreamingStatus)
 	}
@@ -58,6 +64,9 @@ func (p *Processor) ProcessOnce(ctx context.Context) (int, error) {
 
 	embeddings, err := p.Provider.GenerateEmbeddings(texts)
 	if err != nil {
+		if embedding.IsTransient(err) {
+			return retryLater(err)
+		}
 		return fail(err)
 	}
 	if len(embeddings) != len(texts) {
@@ -131,6 +140,9 @@ func (p *Processor) ProcessOnce(ctx context.Context) (int, error) {
 		if len(fresh) > 0 {
 			vecs, err := p.Provider.GenerateEmbeddings(fresh)
 			if err != nil {
+				if embedding.IsTransient(err) {
+					return retryLater(err)
+				}
 				return fail(err)
 			}
 			if len(vecs) != len(fresh) {
