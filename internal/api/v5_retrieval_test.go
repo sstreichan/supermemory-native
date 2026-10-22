@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -263,5 +264,57 @@ func TestV5RelatedWireNeverNull(t *testing.T) {
 		if !strings.Contains(string(raw), key) {
 			t.Fatalf("expected %s in %s", key, raw)
 		}
+	}
+}
+
+// Reranking must only see the candidates that can appear in the response;
+// otherwise the prompt (and the synchronous latency) grows with the fetch
+// window instead of the requested limit.
+func TestV5SearchRerankRespectsLimit(t *testing.T) {
+	h, cleanup := newV5Handler(t)
+	defer cleanup()
+	ns := "retrieval_rerank_limit"
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("d%d", i)
+		code, body := doV5(t, h, "POST", "/ns/"+ns+"/document", map[string]any{"id": id, "content": "alpha document " + id})
+		if code != http.StatusOK {
+			t.Fatalf("create %s: %d %v", id, code, body)
+		}
+	}
+	processAll(t, h)
+
+	var seen atomic.Int32
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []llmMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		ids := []string{}
+		for _, line := range strings.Split(payload.Messages[1].Content, "\n") {
+			if strings.HasPrefix(line, "ID: ") {
+				ids = append(ids, strings.TrimPrefix(line, "ID: "))
+			}
+		}
+		seen.Store(int32(len(ids)))
+		for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
+			ids[i], ids[j] = ids[j], ids[i]
+		}
+		encoded, _ := json.Marshal(ids)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": string(encoded)}}},
+		})
+	}))
+	defer llm.Close()
+	h.LLM = &llmConfig{BaseURL: llm.URL, Model: "stub", Client: llm.Client()}
+
+	code, body := doV5(t, h, "POST", "/ns/"+ns+"/search", map[string]any{"query": "alpha", "rerank": "order", "limit": 2})
+	if code != http.StatusOK {
+		t.Fatalf("search: %d %v", code, body)
+	}
+	if got := seen.Load(); got != 2 {
+		t.Fatalf("rerank saw %d candidates, want 2", got)
+	}
+	if results := body["results"].([]any); len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
 	}
 }

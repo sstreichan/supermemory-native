@@ -156,7 +156,7 @@ func (h *Handler) v5Search(w http.ResponseWriter, r *http.Request, ns string) {
 	if rerank == "order" || rerank == "aggregate" {
 		hits = fuseRRF(vectorHits, lexicalRanking(effectiveQuery, vectorHits), 0)
 		if h.LLM != nil {
-			hits = h.rerankWithLLM(r.Context(), effectiveQuery, hits)
+			hits = h.rerankWithLLM(r.Context(), effectiveQuery, hits, limit)
 		}
 	}
 	if len(hits) > limit {

@@ -51,7 +51,18 @@ type SqliteDB struct {
 }
 
 func NewSqliteDB(dbPath string) (*SqliteDB, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	// busy_timeout is per connection, not per database: a pooled connection
+	// opened later would otherwise fail immediately with SQLITE_BUSY under
+	// concurrent writers. The DSN pragma applies to every new connection.
+	dsn := dbPath
+	if dbPath != ":memory:" {
+		sep := "?"
+		if strings.Contains(dbPath, "?") {
+			sep = "&"
+		}
+		dsn += sep + "_pragma=busy_timeout(5000)"
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}

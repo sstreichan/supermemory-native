@@ -14,7 +14,7 @@ import (
 
 const (
 	rrfK            = 60.0
-	llmRerankLimit  = 30
+	llmRerankLimit  = 10
 	profileCacheTTL = 5 * time.Minute
 )
 
@@ -167,13 +167,19 @@ func (h *Handler) rewriteQuery(ctx context.Context, query string) string {
 
 // rerankWithLLM asks the model for a listwise order of the top candidates.
 // Any malformed response keeps the deterministic input order.
-func (h *Handler) rerankWithLLM(ctx context.Context, query string, hits []db.Hit) []db.Hit {
-	if h.LLM == nil || len(hits) < 2 {
+func (h *Handler) rerankWithLLM(ctx context.Context, query string, hits []db.Hit, limit int) []db.Hit {
+	if h.LLM == nil {
 		return hits
 	}
 	n := len(hits)
+	if limit > 0 && n > limit {
+		n = limit
+	}
 	if n > llmRerankLimit {
 		n = llmRerankLimit
+	}
+	if n < 2 {
+		return hits
 	}
 	head := hits[:n]
 	var b strings.Builder

@@ -124,10 +124,10 @@ Search ranks vector hits and lexical BM25 matches with reciprocal rank fusion fo
 
 Optional enrichment via an OpenAI-compatible chat endpoint (`SUPERMEMORY_LLM_BASE_URL`, `SUPERMEMORY_LLM_MODEL`, `SUPERMEMORY_LLM_API_KEY`):
 - `rewriteQuery: true` rewrites the query before embedding and lexical matching;
-- `rerank: "order"` asks the model for a listwise order of the top 30 candidates;
+- `rerank: "order"` asks the model for a listwise order of the candidates that can appear in the response (at most 10);
 - `POST /profile` synthesizes the `static` facts (cached five minutes).
 
-Without these variables every path stays deterministic and offline; malformed or failed model responses fall back to the deterministic ranking.
+Without these variables every path stays deterministic and offline. Each chat call is capped at 25 s; malformed, failed or timed-out responses fall back to the deterministic ranking.
 
 Not implemented: connectors, organization settings and feedback; `moveTo` runs synchronously and answers `200`. The dashboard exposes a **Namespaces** tab for listing documents, inspecting chunks/memories and searching the v5 API.
 

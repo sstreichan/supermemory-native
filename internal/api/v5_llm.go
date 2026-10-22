@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// llmRequestTimeout bounds one chat call. Reranking is opt-in and synchronous,
+// so it gets enough headroom for a free-tier model without hanging a search
+// indefinitely; every caller falls back to the deterministic order on timeout.
+const llmRequestTimeout = 25 * time.Second
+
 // llmConfig points at an OpenAI-compatible chat-completions endpoint. It is
 // optional: without configuration every retrieval path stays deterministic.
 type llmConfig struct {
@@ -31,7 +36,7 @@ func llmFromEnv() *llmConfig {
 		BaseURL: strings.TrimRight(base, "/"),
 		Model:   model,
 		APIKey:  strings.TrimSpace(os.Getenv("SUPERMEMORY_LLM_API_KEY")),
-		Client:  &http.Client{Timeout: 10 * time.Second},
+		Client:  &http.Client{Timeout: llmRequestTimeout},
 	}
 }
 
@@ -74,7 +79,7 @@ func (c *llmConfig) chat(ctx context.Context, system, user string) (string, erro
 	}
 	client := c.Client
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = &http.Client{Timeout: llmRequestTimeout}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

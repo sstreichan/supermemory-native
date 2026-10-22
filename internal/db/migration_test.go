@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -71,5 +72,36 @@ func TestDocumentsFileColumnsMigration(t *testing.T) {
 	got, _, err := sdb.GetDocument("legacy", "doc2")
 	if err != nil || got.FileName != "a.txt" || got.MIMEType != "text/plain" || got.FileType != "text" {
 		t.Fatalf("file columns not persisted: %+v err=%v", got, err)
+	}
+}
+
+// Every pooled SQLite connection must carry the busy timeout; the PRAGMA is
+// connection-scoped and the driver opens connections lazily.
+func TestBusyTimeoutOnEveryConnection(t *testing.T) {
+	sdb, err := NewSqliteDB(filepath.Join(t.TempDir(), "busy.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer sdb.Close()
+	sdb.db.SetMaxOpenConns(4)
+
+	ctx := context.Background()
+	conns := make([]*sql.Conn, 0, 4)
+	for i := 0; i < 4; i++ {
+		conn, err := sdb.db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		defer conn.Close()
+		conns = append(conns, conn)
+	}
+	for i, conn := range conns {
+		var timeout int
+		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil {
+			t.Fatalf("pragma on conn %d: %v", i, err)
+		}
+		if timeout != 5000 {
+			t.Fatalf("conn %d busy_timeout = %d, want 5000", i, timeout)
+		}
 	}
 }
